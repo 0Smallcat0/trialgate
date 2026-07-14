@@ -114,7 +114,10 @@ on record:
 - **Reference deployment (in progress)** —
   [crypto-quant-signal](https://github.com/0Smallcat0/crypto-quant-signal):
   a daily crypto trend-signal system currently spending its locked holdout
-  and 90-day paper period against these exact gates.
+  and 90-day paper period against these exact gates. It ships a
+  [two-minute offline demo](https://github.com/0Smallcat0/crypto-quant-signal#try-it-in-two-minutes)
+  (`python -m scripts.run_demo` — no keys, no network) if you want to see
+  the host system these gates judge.
 - **A registered FAIL** —
   [tw-stock-trading](https://github.com/0Smallcat0/tw-stock-trading): the
   same strategy family adapted to the Taiwan 0050 ETF **failed its
