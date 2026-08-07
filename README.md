@@ -6,18 +6,81 @@
 [![mypy: strict](https://img.shields.io/badge/mypy-strict-blue.svg)](https://mypy.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-An **anti-overfitting validation gate** for backtested trading strategies.
-Zero dependencies, pure standard library, fully typed.
+You spend three months on a strategy. The backtest shows an annualized Sharpe
+of 1.5. You put real money in. Six months later you are down 35%, and you
+cannot tell whether you were unlucky or whether you fooled yourself — because
+the number that would settle it was never written down anywhere: how many
+variants you tried before you kept this one.
 
-> A strategy earns belief by surviving verification, not by looking good
-> in-sample. Optimizing four parameters on a **pure random walk** can produce
-> an in-sample Sharpe of 1.27. A single backtest — however pretty — is not
-> evidence.
+That number is the whole game. The best of several hundred attempts on pure
+noise looks exactly like skill. You do not have to take that on faith:
 
-`trialgate` packages the mechanical parts of a six-gate qualification
-standard, built from the anti-overfitting literature (Bailey & López de
-Prado, 2014; Bailey, Borwein, López de Prado & Zhu, 2015; Arnott, Harvey &
-Markowitz, 2019):
+```bash
+pip install trialgate
+python -m trialgate demo
+```
+
+Thirty seconds. No data, no keys, no network. Four parameters, 450
+configurations, and a **random walk** underneath — noise by construction, with
+no edge in it to find:
+
+```
+Best in-sample annualized Sharpe: 1.25   (entry=150 exit=20 vol=20/0.7)
+
+Registered trials (the honest N): 450
+OK    450 trials, sealed against edits: 1-449
+
+PASS  data floor (gate 2): 2000 >= 1000
+FAIL  PBO (gate 3): 0.0623932 <= 0.05
+FAIL  DSR (gate 4): 0.844982 >= 0.95
+NOT QUALIFIED
+```
+
+Sharpe 1.25 is a number people quit their jobs over. There is nothing in that
+data. The demo's source is also the integration example — swap its price series
+and its backtest for yours and the rest is unchanged.
+
+## Why the formula alone is not enough
+
+The mathematics that corrects for this was published in 2014 and 2015. It is
+not secret, it is not hard to implement, and it is not what this library
+contributes. It takes one input — how many times you tried — and **every
+implementation of it takes that number on trust.**
+
+You will get that number wrong, and not dishonestly. The overnight grid search
+was 2,000 runs. The tweaking last week was another 30. The five variants you
+"just quickly checked" left no trace at all. By morning the honest recollection
+is "about twenty", the arithmetic downstream is flawless, and the verdict is
+worthless.
+
+trialgate makes N a file instead of a memory. Every backtest appends a line.
+The file is hash-chained, so deleting the runs that embarrassed you breaks it
+and anyone can check with one command. And every gate downstream reads only
+from that file — you never hand it a matrix of results, so there is no set of
+columns left for you to curate.
+
+## What it will not do
+
+Stated up front, because a gate that oversells itself is the failure mode it
+exists to prevent.
+
+- **It cannot make you register anything.** Nothing watches your process. The
+  chain proves the log was not rewritten; it cannot prove the log is complete.
+  You can always run a backtest outside it and never tell anyone.
+- **It does not backtest.** Bring your own engine, data, and return series.
+  This is a judge, not a player.
+- **Passing is necessary, not sufficient.** In a verified 2022 case study the
+  least-overfit strategy in the set still lost ~35% in two months. These gates
+  remove strategies that are probably luck. They cannot promise the market will
+  keep behaving.
+- **One number is still yours to choose.** Trials from a nested grid are
+  correlated, so the honest count is below the registered N and nobody agrees
+  how to find it. The library refuses to guess and makes you type it.
+
+## The six gates
+
+Built from the anti-overfitting literature (Bailey & López de Prado, 2014;
+Bailey, Borwein, López de Prado & Zhu, 2015; Arnott, Harvey & Markowitz, 2019):
 
 | Gate | What it enforces | Module |
 |------|------------------|--------|
@@ -28,42 +91,7 @@ Markowitz, 2019):
 | 5. Single-use holdout | The most recent data slice is locked at first backtest; spending it is a one-way, logged event. Iterated out-of-sample is not out-of-sample. | `trialgate.holdout` |
 | 6. Paper trading | ≥ 3 months live paper execution with measured real costs. Procedural — deliberately **not** in this library: it is a measurement, not a computation. | — |
 
-Passing all six is a **necessary condition, not a profit guarantee**: in a
-verified 2022 case study, the least-overfit strategy still lost ~35% in two
-months.
-
-## Install
-
-```bash
-pip install trialgate
-```
-
-## See it reject a random walk
-
-```bash
-python -m trialgate demo
-```
-
-Thirty seconds, no data, no keys. It sweeps four parameters over 450
-configurations of a **pure random walk** — noise, by construction, with no edge
-to find — and reports what the best configuration achieves:
-
-```
-Best in-sample annualized Sharpe: 1.25   (entry=150 exit=20 vol=20/0.7)
-
-Registered trials (the honest N): 450
-OK    /tmp/.../registry.jsonl
-      450 trials, sealed against edits: 1-449
-
-PASS  data floor (gate 2): 2000 >= 1000
-FAIL  PBO (gate 3): 0.0623932 <= 0.05
-FAIL  DSR (gate 4): 0.844982 >= 0.95
-NOT QUALIFIED
-```
-
-Sharpe 1.25 is a number people quit their jobs over. There is nothing in that
-data. The demo source is the integration example too — swap its price series
-and its backtest for yours and the rest is unchanged.
+Zero dependencies, pure standard library, `mypy --strict`, Python 3.11+.
 
 ## Quickstart
 
@@ -119,23 +147,15 @@ print(report.summary())
 
 `my_backtest_returns()` is yours — `trialgate` judges, it does not backtest.
 
-`effective_trials` has no default on purpose. Trials from a nested parameter
-grid are correlated, so the honest count is somewhere below the registered N
-and nobody agrees on how to find it. Passing the registered N is the
+`effective_trials` has no default on purpose. Passing the registered N is the
 conservative choice: it can only reject, never wave something through. The
 library will not guess for you, because a guess dressed as a computation is
 the failure mode this whole package exists to prevent.
 
-## Auditable, not asserted
+## How the registry is made auditable
 
-Every statistical gate downstream of the registry rests on one number: the
-honest trial count N. Every other implementation of the Deflated Sharpe Ratio
-takes N as an argument and trusts you. That is the weak link, and it is not a
-mathematical one — run 2,000 backtests, report 20, and the arithmetic stays
-flawless while the verdict becomes worthless.
-
-So the registry is a hash chain. Each record carries `prev_hash`: the SHA-256
-over every preceding line of the file, exactly as written on disk.
+Each record carries `prev_hash`: the SHA-256 over every preceding line of the
+file, exactly as written on disk.
 
 ```json
 {"trial_id": 3, "operator_note": "lookback sweep", "prev_hash": "5c20ef7d4e3f...", ...}
@@ -172,16 +192,12 @@ FAIL  state/registry.jsonl
 **What this proves:** no trial before the last anchored record was edited,
 reordered, or removed since it was written.
 
-**What it does not prove**, stated plainly because a gate that oversells
-itself is the failure mode it exists to prevent:
+**What it does not prove**, beyond the limits listed at the top: a local file
+has no external anchor, so dropping the last k records leaves a shorter but
+internally consistent chain. Committing the registry after every run closes
+that and costs nothing.
 
-- **That trials were registered at all.** Nothing observes your process. The
-  chain proves the log was not rewritten; it cannot prove the log is complete.
-- **That the tail was not truncated.** A local file has no external anchor, so
-  dropping the last k records leaves a shorter but internally consistent
-  chain. Committing the registry after every run closes this and costs nothing.
-
-The same applies one level down. Gate 3 needs a T×N matrix of per-period
+The same reasoning applies one level down. Gate 3 needs a T×N matrix of per-period
 returns, one column per configuration — and a matrix you hand in is a matrix
 you can curate. So you don't hand it in: pass `period_returns=` when
 registering a trial, and `performance_matrix()` assembles the CSCV input from
