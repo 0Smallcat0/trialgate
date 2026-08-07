@@ -135,7 +135,7 @@ report = evaluate_registry(
     "state/registry.jsonl",
     candidate_trial_id=37,
     periods_per_year=252,
-    effective_trials=450,   # required: see below
+    effective_trials=450,  # required: see below
     strategy_id="daily_trend_ensemble",
 )
 print(report.summary())
