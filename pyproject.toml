@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trialgate"
-version = "0.1.0"
-description = "Anti-overfitting validation gate for backtested trading strategies: append-only trial registry, CSCV/PBO, Deflated Sharpe Ratio, single-use holdout lock."
+version = "0.4.0"
+description = "Anti-overfitting validation gate for backtested trading strategies: tamper-evident trial registry, CSCV/PBO, Deflated Sharpe Ratio, single-use holdout lock."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -16,6 +16,8 @@ keywords = [
     "deflated-sharpe-ratio",
     "probability-of-backtest-overfitting",
     "cscv",
+    "audit-trail",
+    "tamper-evident",
     "quantitative-finance",
     "validation",
     "holdout",
@@ -33,6 +35,9 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = []
+
+[project.scripts]
+trialgate = "trialgate.__main__:main"
 
 [project.urls]
 Repository = "https://github.com/0Smallcat0/trialgate"

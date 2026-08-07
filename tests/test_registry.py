@@ -6,9 +6,11 @@ from pathlib import Path
 import pytest
 
 from trialgate import (
+    HoldoutViolationError,
     TrialRegistryError,
     append_trial,
     config_hash_for,
+    initialize_holdout,
     load_trials,
     trial_count,
 )
@@ -125,3 +127,49 @@ def test_load_trials_rejects_corrupt_lines(tmp_path: Path) -> None:
 def test_missing_registry_counts_zero(tmp_path: Path) -> None:
     assert trial_count(tmp_path / "absent.jsonl") == 0
     assert load_trials(tmp_path / "absent.jsonl") == ()
+
+
+def test_config_hash_defaults_to_the_hash_of_the_parameters(tmp_path: Path) -> None:
+    parameters = {"lookbacks": "20,65,150,200"}
+
+    record = append_trial(
+        tmp_path / "registry.jsonl",
+        recorded_at=_NOW,
+        code_version="abc1234",
+        strategy_id="daily_trend_ensemble",
+        parameters=parameters,
+        universe=("BTCUSDT",),
+        data_start=_NOW - timedelta(days=400),
+        data_end=_NOW - timedelta(days=10),
+        cost_assumptions={},
+        metrics={},
+        operator_note="",
+    )
+
+    assert record.config_hash == config_hash_for(parameters)
+
+
+def test_registering_into_the_locked_holdout_is_refused(tmp_path: Path) -> None:
+    holdout_path = tmp_path / "holdout.json"
+    initialize_holdout(
+        holdout_path,
+        holdout_start=_NOW - timedelta(days=365),
+        locked_at=_NOW - timedelta(days=365),
+    )
+
+    with pytest.raises(HoldoutViolationError, match="locked holdout"):
+        append_trial(
+            tmp_path / "registry.jsonl",
+            recorded_at=_NOW,
+            code_version="abc1234",
+            strategy_id="daily_trend_ensemble",
+            parameters={},
+            universe=("BTCUSDT",),
+            data_start=_NOW - timedelta(days=400),
+            data_end=_NOW - timedelta(days=10),
+            cost_assumptions={},
+            metrics={},
+            operator_note="peeking",
+            holdout=holdout_path,
+        )
+    assert trial_count(tmp_path / "registry.jsonl") == 0

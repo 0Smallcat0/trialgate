@@ -19,6 +19,14 @@ still lost ~35% in two months.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+
+from trialgate.registry import load_trials, performance_matrix
+from trialgate.validation import (
+    deflated_sharpe_ratio,
+    probability_of_backtest_overfitting,
+    sharpe_ratio,
+)
 
 DEFAULT_MIN_OBSERVATIONS = 1000
 DEFAULT_MAX_PBO = 0.05
@@ -73,7 +81,89 @@ def evaluate_gates(
     registry's full trial count. Flattering inputs void the report.
     """
 
-    checks = (
+    return GateReport(
+        checks=_checks(observations, pbo, deflated_sharpe, min_observations, max_pbo, min_dsr)
+    )
+
+
+def evaluate_registry(
+    path: str | Path,
+    *,
+    candidate_trial_id: int,
+    periods_per_year: int,
+    effective_trials: int,
+    strategy_id: str | None = None,
+    block_count: int = 16,
+    min_observations: int = DEFAULT_MIN_OBSERVATIONS,
+    max_pbo: float = DEFAULT_MAX_PBO,
+    min_dsr: float = DEFAULT_MIN_DSR,
+) -> GateReport:
+    """Judge gates 2-4 for one registered trial, using only registered data.
+
+    Every input the operator could otherwise curate comes out of the registry:
+    the CSCV matrix is assembled from all registered trials, the candidate's
+    return series is a column of that matrix, and the trial Sharpe spread that
+    the DSR deflates by is computed from those same columns rather than read
+    from the self-reported ``metrics`` strings.
+
+    ``effective_trials`` is required, with no default, because it is the last
+    number the library cannot derive: trials from a nested parameter grid are
+    correlated, so the honest count is somewhere below the registered N and
+    nobody agrees on how to find it. Passing the registered N is the
+    conservative choice — it can only reject, never wave something through.
+    Whatever you pass, you had to type it.
+    """
+
+    trials = [
+        trial
+        for trial in load_trials(path)
+        if strategy_id is None or trial.strategy_id == strategy_id
+    ]
+    trial_ids = [trial.trial_id for trial in trials]
+    if candidate_trial_id not in trial_ids:
+        msg = (
+            f"trial {candidate_trial_id} is not registered"
+            + (f" under strategy_id {strategy_id!r}" if strategy_id else "")
+            + f"; registered ids are {trial_ids[:10]}{'...' if len(trial_ids) > 10 else ''}"
+        )
+        raise ValueError(msg)
+
+    matrix = performance_matrix(path, strategy_id=strategy_id)
+    candidate_column = trial_ids.index(candidate_trial_id)
+    candidate_returns = [row[candidate_column] for row in matrix]
+    trial_sharpes = [
+        sharpe_ratio([row[column] for row in matrix], periods_per_year=periods_per_year)
+        for column in range(len(matrix[0]))
+    ]
+
+    pbo = probability_of_backtest_overfitting(matrix, block_count=block_count)
+    dsr = deflated_sharpe_ratio(
+        candidate_returns,
+        trial_sharpes=trial_sharpes,
+        periods_per_year=periods_per_year,
+        effective_trials=effective_trials,
+    )
+    return GateReport(
+        checks=_checks(
+            len(matrix),
+            pbo.pbo,
+            dsr.deflated_sharpe_ratio,
+            min_observations,
+            max_pbo,
+            min_dsr,
+        )
+    )
+
+
+def _checks(
+    observations: int,
+    pbo: float,
+    deflated_sharpe: float,
+    min_observations: int,
+    max_pbo: float,
+    min_dsr: float,
+) -> tuple[GateCheck, ...]:
+    return (
         GateCheck(
             gate="data floor (gate 2)",
             passed=observations >= min_observations,
@@ -96,4 +186,3 @@ def evaluate_gates(
             comparison=">=",
         ),
     )
-    return GateReport(checks=checks)

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -45,8 +46,13 @@ class PBOResult:
     observations: int
 
 
-def sharpe_ratio(returns: list[float], *, periods_per_year: int = 365) -> float:
-    """Annualized Sharpe ratio of a periodic return series (risk-free = 0)."""
+def sharpe_ratio(returns: list[float], *, periods_per_year: int) -> float:
+    """Annualized Sharpe ratio of a periodic return series (risk-free = 0).
+
+    ``periods_per_year`` has no default on purpose: 252 for trading days, 365
+    for crypto, 12 for monthly. Guessing it wrong silently rescales every
+    Sharpe in the registry by up to 20%.
+    """
 
     if len(returns) < 2:
         return 0.0
@@ -59,24 +65,31 @@ def sharpe_ratio(returns: list[float], *, periods_per_year: int = 365) -> float:
 def deflated_sharpe_ratio(
     returns: list[float],
     *,
-    trial_sharpe_variance: float,
+    trial_sharpes: Sequence[float],
+    periods_per_year: int,
     effective_trials: int,
 ) -> DeflatedSharpeResult:
     """Probability that the true Sharpe exceeds the expected max of N noise trials.
 
     ``returns`` are the candidate strategy's periodic (e.g. daily) returns.
-    ``trial_sharpe_variance`` is the variance of (non-annualized) Sharpe ratios
-    across ALL registered trials; ``effective_trials`` is the
-    correlation-adjusted trial count N. Pass the honest numbers from the trial
-    registry — a flattering N voids the gate.
+    ``trial_sharpes`` are the ANNUALIZED Sharpe ratios of every registered
+    trial — the same numbers the registry stores — de-annualized here rather
+    than by the caller, because feeding annualized variance into this formula
+    inflates the expected maximum by ``periods_per_year`` and false-rejects
+    everything. ``effective_trials`` is the correlation-adjusted trial count N;
+    a flattering N voids the gate.
     """
 
     if effective_trials < 1:
         msg = "effective_trials must be at least 1"
         raise ValidationInputError(msg)
-    if trial_sharpe_variance < 0.0:
-        msg = "trial_sharpe_variance must not be negative"
+    if periods_per_year < 1:
+        msg = "periods_per_year must be at least 1"
         raise ValidationInputError(msg)
+    # Var(SR_annual / sqrt(p)) == Var(SR_annual) / p.
+    trial_sharpe_variance = (
+        statistics.pvariance(trial_sharpes) / periods_per_year if len(trial_sharpes) > 1 else 0.0
+    )
     observations = len(returns)
     if observations < 3:
         msg = "returns must contain at least 3 observations"
@@ -158,30 +171,37 @@ def probability_of_backtest_overfitting(
 
     usable_rows = observations - (observations % block_count)
     block_size = usable_rows // block_count
-    block_slices = [
-        performance_matrix[block * block_size : (block + 1) * block_size]
-        for block in range(block_count)
-    ]
 
+    # Every split needs each column's Sharpe over its half of the blocks.
+    # Recomputing those from raw rows repeats the same additions across all
+    # C(S, S/2) splits. Sum and sum-of-squares per block compose additively,
+    # so accumulate them once and assemble each split from S/2 of them.
+    block_sums: list[list[float]] = []
+    block_squares: list[list[float]] = []
+    for block in range(block_count):
+        sums = [0.0] * strategies
+        squares = [0.0] * strategies
+        for row in performance_matrix[block * block_size : (block + 1) * block_size]:
+            for column in range(strategies):
+                value = row[column]
+                sums[column] += value
+                squares[column] += value * value
+        block_sums.append(sums)
+        block_squares.append(squares)
+
+    half = block_count // 2
+    split_size = block_size * half
     overfit_count = 0
-    combos = list(combinations(range(block_count), block_count // 2))
+    combos = list(combinations(range(block_count), half))
     for train_blocks in combos:
         train_set = frozenset(train_blocks)
-        train_rows = [row for block in sorted(train_set) for row in block_slices[block]]
-        test_rows = [
-            row
-            for block in range(block_count)
-            if block not in train_set
-            for row in block_slices[block]
-        ]
-        train_scores = [_column_sharpe(train_rows, column) for column in range(strategies)]
-        test_scores = [_column_sharpe(test_rows, column) for column in range(strategies)]
+        test_blocks = tuple(block for block in range(block_count) if block not in train_set)
+        train_scores = _split_sharpes(block_sums, block_squares, train_blocks, split_size)
+        test_scores = _split_sharpes(block_sums, block_squares, test_blocks, split_size)
         best_in_sample = max(range(strategies), key=lambda column: train_scores[column])
-        rank = sum(
-            1 for column in range(strategies) if test_scores[column] <= test_scores[best_in_sample]
-        )
-        relative_rank = rank / (strategies + 1)
-        if relative_rank <= 0.5:
+        best_out_of_sample = test_scores[best_in_sample]
+        rank = sum(1 for score in test_scores if score <= best_out_of_sample)
+        if rank / (strategies + 1) <= 0.5:
             overfit_count += 1
 
     return PBOResult(
@@ -193,30 +213,32 @@ def probability_of_backtest_overfitting(
     )
 
 
-def _column_sharpe(rows: list[list[float]], column: int) -> float:
-    values = [row[column] for row in rows]
-    if len(values) < 2:
-        return 0.0
-    stdev = statistics.stdev(values)
-    if stdev == 0.0:
-        return 0.0
-    return statistics.fmean(values) / stdev
+def _split_sharpes(
+    block_sums: list[list[float]],
+    block_squares: list[list[float]],
+    blocks: tuple[int, ...],
+    split_size: int,
+) -> list[float]:
+    """Per-column Sharpe over the union of ``blocks``, from block statistics."""
 
-
-def non_annualized_sharpe_variance(
-    annualized_sharpes: list[float], *, periods_per_year: int = 365
-) -> float:
-    """De-annualize registry Sharpe values into the variance DSR expects.
-
-    The trial registry stores ANNUALIZED Sharpe ratios; feeding their variance
-    into deflated_sharpe_ratio() unconverted inflates the expected-max Sharpe
-    by periods_per_year and false-rejects everything. Var(SR_ann / sqrt(p))
-    equals Var(SR_ann) / p.
-    """
-
-    if len(annualized_sharpes) < 2:
-        return 0.0
-    return statistics.pvariance(annualized_sharpes) / periods_per_year
+    strategies = len(block_sums[0])
+    if split_size < 2:
+        return [0.0] * strategies
+    totals = [0.0] * strategies
+    squares = [0.0] * strategies
+    for block in blocks:
+        block_total = block_sums[block]
+        block_square = block_squares[block]
+        for column in range(strategies):
+            totals[column] += block_total[column]
+            squares[column] += block_square[column]
+    scores: list[float] = []
+    for column in range(strategies):
+        mean = totals[column] / split_size
+        # Sample variance (ddof=1), matching statistics.stdev.
+        variance = (squares[column] - totals[column] * mean) / (split_size - 1)
+        scores.append(mean / math.sqrt(variance) if variance > 0.0 else 0.0)
+    return scores
 
 
 def _skewness(values: list[float]) -> float:
