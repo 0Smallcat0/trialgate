@@ -36,6 +36,23 @@ class DeflatedSharpeResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DataRequirement:
+    """The answer to "how much more data", instead of "not enough data".
+
+    ``observations_required`` and ``shortfall`` are None exactly when
+    ``reachable`` is False, which is the honest outcome for a candidate whose
+    Sharpe already sits below the expected maximum of N noise trials: it does
+    not need more data, it needs a different strategy.
+    """
+
+    reachable: bool
+    observations_present: int
+    observations_required: int | None
+    shortfall: int | None
+    target_dsr: float
+
+
+@dataclass(frozen=True, slots=True)
 class PBOResult:
     """CSCV output: probability of backtest overfitting."""
 
@@ -132,6 +149,68 @@ def deflated_sharpe_ratio(
         expected_max_sharpe=expected_max_sharpe,
         effective_trials=effective_trials,
         observations=observations,
+    )
+
+
+def observations_required_for_dsr(
+    returns: list[float],
+    *,
+    trial_sharpes: Sequence[float],
+    periods_per_year: int,
+    effective_trials: int,
+    target_dsr: float = 0.95,
+) -> DataRequirement:
+    """How many observations this candidate would need to clear the DSR gate.
+
+    "Not enough data" is a true statement that ends a conversation. This turns
+    it into a quantity someone can go and collect, by inverting the DSR
+    statistic for the sample size at which it would reach ``target_dsr``.
+
+    The answer assumes the observed per-period Sharpe, skew and kurtosis hold
+    over the additional data. That is a requirement, not a forecast: collecting
+    the extra observations can just as easily reveal the Sharpe was noise,
+    which is the outcome the gate exists to allow. When the candidate's Sharpe
+    is already below the expected maximum of N noise trials, no sample size
+    rescues it and ``reachable`` is False -- more data cannot fix having been
+    beaten by chance.
+    """
+
+    measured = deflated_sharpe_ratio(
+        returns,
+        trial_sharpes=trial_sharpes,
+        periods_per_year=periods_per_year,
+        effective_trials=effective_trials,
+    )
+    present = len(returns)
+    edge = measured.observed_sharpe - measured.expected_max_sharpe
+    if edge <= 0.0:
+        return DataRequirement(
+            reachable=False,
+            observations_present=present,
+            observations_required=None,
+            shortfall=None,
+            target_dsr=target_dsr,
+        )
+
+    skewness = _skewness(returns)
+    kurtosis = _kurtosis(returns)
+    observed = measured.observed_sharpe
+    mertens_term = 1.0 - skewness * observed + (kurtosis - 1.0) / 4.0 * observed**2
+    if mertens_term <= 0.0:
+        msg = (
+            "returns are too extreme or too short to invert the DSR "
+            f"(Mertens variance term {mertens_term:.6f} <= 0)"
+        )
+        raise ValidationInputError(msg)
+
+    threshold = statistics.NormalDist().inv_cdf(target_dsr)
+    required = 1 + math.ceil((threshold * math.sqrt(mertens_term) / edge) ** 2)
+    return DataRequirement(
+        reachable=True,
+        observations_present=present,
+        observations_required=required,
+        shortfall=max(0, required - present),
+        target_dsr=target_dsr,
     )
 
 

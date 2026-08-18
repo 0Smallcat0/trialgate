@@ -25,20 +25,24 @@ configurations, and a **random walk** underneath — noise by construction, with
 no edge in it to find:
 
 ```
-Best in-sample annualized Sharpe: 1.25   (entry=150 exit=20 vol=20/0.7)
+Best in-sample annualized Sharpe: 1.20   (entry=150 exit=20 vol=20/0.7)
 
 Registered trials (the honest N): 450
 OK    450 trials, sealed against edits: 1-449
 
 PASS  data floor (gate 2): 2000 >= 1000
-FAIL  PBO (gate 3): 0.0623932 <= 0.05
-FAIL  DSR (gate 4): 0.844982 >= 0.95
+PASS  PBO (gate 3): 0.0417249 <= 0.05
+FAIL  DSR (gate 4): 0.603118 >= 0.95
+PASS  stop-line survivability (gate 7): 1.10249e-15 <= 0.1
+PASS  declared costs (gate 8): 450 >= 450
 NOT QUALIFIED
 ```
 
-Sharpe 1.25 is a number people quit their jobs over. There is nothing in that
-data. The demo's source is also the integration example — swap its price series
-and its backtest for yours and the rest is unchanged.
+Sharpe 1.20 is a number people quit their jobs over. There is nothing in that
+data. Note which gate caught it: PBO passed, comfortably. One gate clearing is
+not the same as a strategy clearing, which is why there is more than one. The
+demo's source is also the integration example — swap its price series and its
+backtest for yours and the rest is unchanged.
 
 ## Why the formula alone is not enough
 
@@ -77,10 +81,11 @@ exists to prevent.
   correlated, so the honest count is below the registered N and nobody agrees
   how to find it. The library refuses to guess and makes you type it.
 
-## The six gates
+## The eight gates
 
 Built from the anti-overfitting literature (Bailey & López de Prado, 2014;
-Bailey, Borwein, López de Prado & Zhu, 2015; Arnott, Harvey & Markowitz, 2019):
+Bailey, Borwein, López de Prado & Zhu, 2015; Arnott, Harvey & Markowitz, 2019)
+and, for gate 7, the first-passage identity for Brownian motion with drift:
 
 | Gate | What it enforces | Module |
 |------|------------------|--------|
@@ -90,6 +95,23 @@ Bailey, Borwein, López de Prado & Zhu, 2015; Arnott, Harvey & Markowitz, 2019):
 | 4. DSR ≥ 0.95 | Deflated Sharpe Ratio — the observed Sharpe must beat the expected maximum of N noise trials, adjusted for skew, kurtosis, and sample length. | `trialgate.validation` |
 | 5. Single-use holdout | The most recent data slice is locked at first backtest; spending it is a one-way, logged event. Iterated out-of-sample is not out-of-sample. | `trialgate.holdout` |
 | 6. Paper trading | ≥ 3 months live paper execution with measured real costs. Procedural — deliberately **not** in this library: it is a measurement, not a computation. | — |
+| 7. Stop-line survivability | The probability that the strategy's own volatility trips the operator's hard stop, from an exact first-passage formula rather than a simulation. Reports the volatility to size down to. Off unless you supply a stop-loss policy — defaulting one would be inventing your risk appetite. | `trialgate.risk` |
+| 8. Declared costs | Every trial in the registry priced execution above zero. A missing key and an explicit `"0"` are the same verdict; only one of them looks like an oversight. | `trialgate.gates` |
+
+Gate 7 exists because a strategy can clear 2–4 and still be untradeable. A
+*genuine* annualized Sharpe of 1.0 run at 15% volatility breaches a −15% stop
+inside a year 8.1% of the time; at Sharpe 0.5 that becomes 16.7%. The signal is
+fine in the second case — the position size and the stop line were chosen by
+different people on different days and never checked against each other, and
+the shutdown looks exactly like the signal being wrong.
+
+That gate measures loss from starting equity, not drawdown from a running
+peak. The two differ by roughly 3× (23% against 8.1% in the case above), so
+quoting one for the other is the easy way to be confidently wrong. The
+from-peak variant is absent rather than approximated: the cheap route through
+Lehoczky's expected first-passage time overstated by 3× in the low-probability
+region when measured against simulation, and a gate is the wrong place for a
+number that is wrong exactly where it matters.
 
 Zero dependencies, pure standard library, `mypy --strict`, Python 3.11+.
 
@@ -137,13 +159,29 @@ report = evaluate_registry(
     periods_per_year=252,
     effective_trials=450,  # required: see below
     strategy_id="daily_trend_ensemble",
+    stop_loss_fraction=0.15,  # your hard stop; omitting it skips gate 7
 )
 print(report.summary())
 # PASS  data floor (gate 2): 1848 >= 1000
 # PASS  PBO (gate 3): 0.02 <= 0.05
 # PASS  DSR (gate 4): 0.97 >= 0.95
-# QUALIFIED
+# FAIL  stop-line survivability (gate 7): 0.358932 <= 0.1  -- ran at 24.0% annualized
+#       volatility against a -15% stop; survivable volatility is 12.7% (size x0.53)
+# PASS  declared costs (gate 8): 450 >= 450
+# NOT QUALIFIED
 ```
+
+Gate 7 is the one that fails with an instruction attached. The edge is real —
+gates 2-4 all cleared — but a Sharpe-0.55 strategy run at 24% volatility
+breaches a −15% stop 36% of the time in a year, so the account gets shut down
+before the edge pays. `size x0.53` is what to do about it, not a suggestion to
+think harder.
+
+When a gate fails on thin data rather than on a bad strategy,
+`observations_required_for_dsr()` answers "how many more" instead of "not
+enough" — or reports that no sample size rescues a Sharpe already below the
+expected maximum of N noise trials, which is a different problem and needs a
+different strategy rather than more patience.
 
 `my_backtest_returns()` is yours — `trialgate` judges, it does not backtest.
 

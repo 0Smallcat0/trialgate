@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.5.0
+
+Two gates for the case a backtest clears every statistic and is still
+untradeable: the position size trips the operator's own stop before the edge
+pays, or the returns were never charged for execution.
+
+### Added
+
+- **Gate 7, stop-line survivability** (`trialgate.risk`). Given a stop-loss
+  policy, reports the probability that the strategy's own volatility breaches
+  it within the horizon, and the volatility to size down to. Both moments come
+  off the candidate's registered return series; the only operator input is the
+  policy, which no library can derive without inventing someone's risk
+  appetite. Activate it with `evaluate_registry(..., stop_loss_fraction=0.15)`
+  — omitting it skips the gate rather than defaulting a stop line.
+
+  The motivating number: a *genuine* annualized Sharpe of 1.0 run at 15%
+  volatility breaches a −15% stop inside a year 8.1% of the time, and at
+  Sharpe 0.5 that becomes 16.7%. Nothing is wrong with the signal in the
+  second case, but the shutdown looks exactly like the signal being wrong.
+
+  Computed from the exact first-passage identity for Brownian motion with
+  drift, in log equity, measuring loss from starting equity rather than
+  drawdown from a running peak. Those two differ by roughly 3× (23% against
+  8.1% in the case above). The from-peak variant is deliberately absent: the
+  cheap route through Lehoczky's expected first-passage time fed into a
+  Poisson exceedance approximation was measured against simulation and
+  overstated by 3× in the low-probability region a gate spends all its time
+  in, so it was rejected rather than shipped with a caveat.
+
+- **Gate 8, declared costs**, on by default in `evaluate_registry()`. Every
+  trial in the registry must price execution above zero. A missing key and an
+  explicit `"0"` get the same verdict, because only one of them looks like an
+  oversight. Waive it with `require_declared_costs=False`.
+
+- `observations_required_for_dsr()` returns a `DataRequirement`: how many
+  observations the candidate would need to clear the DSR gate, and the
+  shortfall against what it has. "Not enough data" is a true statement that
+  ends a conversation; this turns it into a quantity someone can go and
+  collect. When the candidate's Sharpe already sits below the expected maximum
+  of N noise trials, `reachable` is False — no sample size fixes having been
+  beaten by chance, and reporting a number there would be worse than
+  reporting none.
+
+- `GateCheck.detail`: the instruction a bare threshold cannot carry. Gate 7
+  fails with a volatility to size to, gate 8 with the trials that were never
+  charged, and the data floor with how many observations are missing. Defaults
+  to empty, so pre-0.5.0 construction is unchanged.
+
+### Changed
+
+- **Breaking:** registries written before 0.5.0 that recorded
+  `cost_assumptions={}` now fail gate 8. That is the intended verdict on a
+  gross-of-cost backtest, not an upgrade accident. Re-run those trials with
+  costs charged, or pass `require_declared_costs=False` and know what the
+  number you are looking at excludes.
+- The demo charges a 10 bps round trip on every position change and declares
+  the same number to the registry, because a demo that priced execution at
+  zero would be demonstrating the wrong thing. The best configuration's
+  in-sample Sharpe drops from 1.25 to **1.20** and it is still rejected — but
+  by DSR alone now (0.60), with PBO passing at 0.042. One gate clearing is not
+  a strategy clearing, which is the reason there is more than one.
+
 ## 0.4.0
 
 Everything a caller could quietly get wrong is now either derived by the

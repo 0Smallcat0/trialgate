@@ -32,6 +32,13 @@ ENTRY_LOOKBACKS = (5, 10, 15, 20, 30, 40, 65, 100, 150, 200)
 EXIT_LOOKBACKS = (3, 5, 10, 20, 40)
 VOL_WINDOWS = (10, 20, 60)
 VOL_THRESHOLDS = (0.7, 1.0, 1.4)
+# Charged on every position change, and declared to the registry as the same
+# number. Gate 8 rejects a registry whose trials priced execution at zero, so
+# a demo that skipped this would be demonstrating the wrong thing.
+ROUND_TRIP_BPS = 10.0
+# The demo's own hard stop, for gate 7. A real one is a policy decision; this
+# is here so the gate has something to measure against.
+STOP_LOSS_FRACTION = 0.15
 
 
 def _random_walk(seed: int) -> list[float]:
@@ -62,12 +69,19 @@ def _strategy_returns(
     vol_window: int,
     vol_threshold: float,
 ) -> list[float]:
-    """Trend-follow with a volatility filter: four knobs, no edge to find."""
+    """Trend-follow with a volatility filter: four knobs, no edge to find.
+
+    Returns are net of execution: each side of a round trip is charged when the
+    position changes, so what reaches the registry is what an account would
+    have kept.
+    """
 
     warmup = max(entry_lookback, exit_lookback, vol_window)
+    one_way_cost = ROUND_TRIP_BPS / 2.0 / 10_000.0
     returns = [0.0] * PERIODS
     holding = False
     for day in range(warmup, PERIODS):
+        previous = holding
         if volatility[day] > vol_threshold * baseline:
             holding = False
         elif holding:
@@ -76,6 +90,8 @@ def _strategy_returns(
             holding = prices[day] > prices[day - entry_lookback]
         if holding:
             returns[day] = raw[day]
+        if holding != previous:
+            returns[day] -= one_way_cost
     return returns
 
 
@@ -126,7 +142,7 @@ def run_demo() -> int:
                 universe=("SYNTHETIC",),
                 data_start=datetime(2018, 1, 1, tzinfo=UTC),
                 data_end=datetime(2025, 12, 31, tzinfo=UTC),
-                cost_assumptions={"round_trip_bps": "0"},
+                cost_assumptions={"round_trip_bps": f"{ROUND_TRIP_BPS:g}"},
                 metrics={"annualized_sharpe": f"{annualized:.4f}"},
                 operator_note=f"entry={entry} exit={exit_} vol={window}/{threshold}",
                 period_returns=returns,
@@ -149,6 +165,7 @@ def run_demo() -> int:
             periods_per_year=PERIODS_PER_YEAR,
             effective_trials=len(grid),
             strategy_id="trend_with_vol_filter",
+            stop_loss_fraction=STOP_LOSS_FRACTION,
         )
         print(report.summary())
 

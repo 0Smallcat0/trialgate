@@ -15,7 +15,9 @@ _START = datetime(2019, 1, 1, tzinfo=UTC)
 _END = datetime(2025, 6, 30, tzinfo=UTC)
 
 
-def _register_noise_sweep(path: Path, configs: int = 12, periods: int = 300) -> None:
+def _register_noise_sweep(
+    path: Path, configs: int = 12, periods: int = 300, round_trip_bps: str = "25"
+) -> None:
     """A random walk filtered by N different lookbacks: no edge exists."""
 
     rng = random.Random(11)
@@ -39,7 +41,7 @@ def _register_noise_sweep(path: Path, configs: int = 12, periods: int = 300) -> 
             universe=("SYNTH",),
             data_start=_START,
             data_end=_END,
-            cost_assumptions={},
+            cost_assumptions={"round_trip_bps": round_trip_bps},
             metrics={},
             operator_note=f"config {config}",
             period_returns=returns,
@@ -65,8 +67,80 @@ def test_a_noise_sweep_is_not_qualified(tmp_path: Path) -> None:
         "data floor (gate 2)",
         "PBO (gate 3)",
         "DSR (gate 4)",
+        "declared costs (gate 8)",
     ]
     assert "NOT QUALIFIED" in report.summary()
+
+
+def test_a_gross_of_cost_registry_fails_the_cost_gate(tmp_path: Path) -> None:
+    """Returns that were never charged for execution are not returns."""
+
+    registry_path = tmp_path / "registry.jsonl"
+    _register_noise_sweep(registry_path, configs=4, round_trip_bps="0")
+
+    report = evaluate_registry(
+        registry_path,
+        candidate_trial_id=1,
+        periods_per_year=252,
+        effective_trials=4,
+        block_count=4,
+        min_observations=100,
+    )
+    costs = next(check for check in report.checks if check.gate.startswith("declared costs"))
+
+    assert not costs.passed
+    assert costs.observed == 0.0
+    assert costs.threshold == 4.0
+    assert "priced execution at zero" in costs.detail
+
+
+def test_the_cost_gate_can_be_waived_but_not_by_accident(tmp_path: Path) -> None:
+    registry_path = tmp_path / "registry.jsonl"
+    _register_noise_sweep(registry_path, configs=4, round_trip_bps="0")
+
+    report = evaluate_registry(
+        registry_path,
+        candidate_trial_id=1,
+        periods_per_year=252,
+        effective_trials=4,
+        block_count=4,
+        min_observations=100,
+        require_declared_costs=False,
+    )
+
+    assert not any(check.gate.startswith("declared costs") for check in report.checks)
+
+
+def test_the_stop_line_gate_is_absent_until_a_policy_is_given(tmp_path: Path) -> None:
+    """No default stop line: the library measures a policy, it does not invent one."""
+
+    registry_path = tmp_path / "registry.jsonl"
+    _register_noise_sweep(registry_path, configs=4)
+
+    without = evaluate_registry(
+        registry_path,
+        candidate_trial_id=1,
+        periods_per_year=252,
+        effective_trials=4,
+        block_count=4,
+        min_observations=100,
+    )
+    with_policy = evaluate_registry(
+        registry_path,
+        candidate_trial_id=1,
+        periods_per_year=252,
+        effective_trials=4,
+        block_count=4,
+        min_observations=100,
+        stop_loss_fraction=0.15,
+    )
+    stop = next(
+        check for check in with_policy.checks if check.gate.startswith("stop-line survivability")
+    )
+
+    assert not any(check.gate.startswith("stop-line") for check in without.checks)
+    assert 0.0 <= stop.observed <= 1.0
+    assert "survivable volatility" in stop.detail
 
 
 def test_the_data_floor_reads_the_registered_series_length(tmp_path: Path) -> None:
