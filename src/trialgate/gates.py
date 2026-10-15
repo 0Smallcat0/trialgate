@@ -224,7 +224,8 @@ def evaluate_registry(
                 detail=(
                     ""
                     if not undeclared
-                    else f"{len(undeclared)} trials priced execution at zero: "
+                    else f"{len(undeclared)} trials priced execution at zero "
+                    "or left it out of their returns: "
                     f"{shown}{'...' if len(undeclared) > 5 else ''}"
                 ),
             ),
@@ -244,15 +245,33 @@ def _stop_check(breach: float, max_stop_breach: float, detail: str) -> GateCheck
     )
 
 
+_CHARGED_FLAGS = frozenset({"charged", "deducted", "net_of_costs"})
+_FALSE_WORDS = frozenset({"", "0", "f", "false", "n", "no", "none"})
+
+
 def _declares_positive_cost(assumptions: Mapping[str, str]) -> bool:
-    """True when at least one cost assumption parses to a strictly positive number.
+    """True when at least one cost assumption parses to a strictly positive number
+    and no assumption says the returns were not charged it.
 
     A missing key and an explicit "0" are treated the same on purpose. Both
     describe a backtest that was never charged for execution, and only one of
     them looks like an oversight.
+
+    A cost that is declared and then flagged as left out -- ``charged``,
+    ``deducted`` or ``net_of_costs`` set to false -- is the same case a third
+    way: the number says what execution would cost, and the returns being
+    judged never paid it. The flags are yes/no answers, not prices, so they do
+    not count as the positive cost either.
     """
 
-    for raw in assumptions.values():
+    normalized = {
+        str(key).strip().lower(): str(raw).strip().lower() for key, raw in assumptions.items()
+    }
+    if any(normalized[flag] in _FALSE_WORDS for flag in _CHARGED_FLAGS & normalized.keys()):
+        return False
+    for key, raw in normalized.items():
+        if key in _CHARGED_FLAGS:
+            continue
         try:
             if float(raw) > 0.0:
                 return True

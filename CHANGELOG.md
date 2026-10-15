@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Gate 8 passed a cost that was declared and then marked as not charged.**
+  `cost_assumptions={"round_trip_pct": "0.585", "deducted": "false"}` cleared
+  the gate, because the only test was "some value parses above zero". That
+  registry says in its own words that the returns are gross of cost, which is
+  the case the gate exists for. A `charged`, `deducted` or `net_of_costs` key
+  set to a false word (`false`, `no`, `0`, empty …) now fails the trial, and
+  those flags no longer count as the positive price themselves (`{"charged":
+  "1"}` alone declares no cost). Found against a live registry whose replay
+  trials scored excess returns gross and said so.
+- Gate 8's failure detail now reads "priced execution at zero or left it out
+  of their returns", since there are two ways to get there.
+
 ## 0.5.0
 
 Two gates for the case a backtest clears every statistic and is still

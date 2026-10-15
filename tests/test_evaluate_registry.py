@@ -16,7 +16,11 @@ _END = datetime(2025, 6, 30, tzinfo=UTC)
 
 
 def _register_noise_sweep(
-    path: Path, configs: int = 12, periods: int = 300, round_trip_bps: str = "25"
+    path: Path,
+    configs: int = 12,
+    periods: int = 300,
+    round_trip_bps: str = "25",
+    cost_flags: dict[str, str] | None = None,
 ) -> None:
     """A random walk filtered by N different lookbacks: no edge exists."""
 
@@ -41,7 +45,7 @@ def _register_noise_sweep(
             universe=("SYNTH",),
             data_start=_START,
             data_end=_END,
-            cost_assumptions={"round_trip_bps": round_trip_bps},
+            cost_assumptions={"round_trip_bps": round_trip_bps, **(cost_flags or {})},
             metrics={},
             operator_note=f"config {config}",
             period_returns=returns,
@@ -92,6 +96,53 @@ def test_a_gross_of_cost_registry_fails_the_cost_gate(tmp_path: Path) -> None:
     assert costs.observed == 0.0
     assert costs.threshold == 4.0
     assert "priced execution at zero" in costs.detail
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [{"deducted": "false"}, {"Charged": "No"}, {"net_of_costs": "0"}],
+)
+def test_a_cost_declared_but_not_charged_fails_the_cost_gate(
+    tmp_path: Path, flags: dict[str, str]
+) -> None:
+    """Naming the price of execution is not paying it."""
+
+    registry_path = tmp_path / "registry.jsonl"
+    _register_noise_sweep(registry_path, configs=4, round_trip_bps="58.5", cost_flags=flags)
+
+    report = evaluate_registry(
+        registry_path,
+        candidate_trial_id=1,
+        periods_per_year=252,
+        effective_trials=4,
+        block_count=4,
+        min_observations=100,
+    )
+    costs = next(check for check in report.checks if check.gate.startswith("declared costs"))
+
+    assert not costs.passed
+    assert costs.observed == 0.0
+    assert "left it out of their returns" in costs.detail
+
+
+def test_a_charged_flag_is_an_answer_not_a_price(tmp_path: Path) -> None:
+    def cost_gate(round_trip_bps: str, flags: dict[str, str]) -> bool:
+        registry_path = tmp_path / f"registry_{round_trip_bps}.jsonl"
+        _register_noise_sweep(
+            registry_path, configs=4, round_trip_bps=round_trip_bps, cost_flags=flags
+        )
+        report = evaluate_registry(
+            registry_path,
+            candidate_trial_id=1,
+            periods_per_year=252,
+            effective_trials=4,
+            block_count=4,
+            min_observations=100,
+        )
+        return next(c for c in report.checks if c.gate.startswith("declared costs")).passed
+
+    assert cost_gate("25", {"deducted": "true"})
+    assert not cost_gate("0", {"charged": "1"})
 
 
 def test_the_cost_gate_can_be_waived_but_not_by_accident(tmp_path: Path) -> None:
