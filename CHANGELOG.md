@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.1
 
 ### Fixed
 
@@ -11,10 +11,16 @@
   the case the gate exists for. A `charged`, `deducted` or `net_of_costs` key
   set to a false word (`false`, `no`, `0`, empty …) now fails the trial, and
   those flags no longer count as the positive price themselves (`{"charged":
-  "1"}` alone declares no cost). Found against a live registry whose replay
+  "1"}` alone declares no cost). Found against a real registry whose replay
   trials scored excess returns gross and said so.
 - Gate 8's failure detail now reads "priced execution at zero or left it out
   of their returns", since there are two ways to get there.
+
+### Docs
+
+- The README, the gate docstring and the project links name the crypto signal
+  system this library was extracted from as its host system, without a
+  qualification status that goes stale.
 
 ## 0.5.0
 

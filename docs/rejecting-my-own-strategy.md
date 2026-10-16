@@ -25,8 +25,8 @@ measured real costs. Claims are pre-registered *before* the first trial runs,
 so the pass/fail line cannot quietly move after seeing results.
 
 The first deployment was a daily long-only trend system for crypto spot
-(BTC/ETH), which is still mid-qualification. This story is about the second
-deployment — the one the gate killed.
+(BTC/ETH). This story is about the second deployment — the one the gate
+killed.
 
 ## The test case: same strategy family, Taiwan market
 
@@ -102,9 +102,8 @@ without the registry the two buggy trials would have vanished; without the
 locked holdout I would have "just checked" the recent data until something
 passed. The gate's job is to say no by default and make every yes expensive.
 
-The crypto deployment is now spending its own single-use holdout and 90-day
-paper period. It gets no favoritism: if its numbers come back like Taiwan's,
-it gets the same report.
+The crypto deployment gets no favoritism: it is held to the same bars and
+the same report.
 
 ## The tooling
 
@@ -114,7 +113,7 @@ threshold report — are extracted into
 strictly-typed Python package, so the next strategy (mine or yours) can be
 rejected with less ceremony. The full FAIL report lives in the
 [tw-stock-trading](https://github.com/0Smallcat0/tw-stock-trading)
-repository; the live crypto system is
+repository; the crypto system it came from is
 [crypto-quant-signal](https://github.com/0Smallcat0/crypto-quant-signal).
 
 *Method note: the gate specification, thresholds, and pre-registered claims

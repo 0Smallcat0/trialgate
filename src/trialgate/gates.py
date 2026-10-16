@@ -1,7 +1,7 @@
 """Threshold gates and the combined qualification report.
 
-The qualification standard (numbering follows the reference deployment, a live
-crypto signal system):
+The qualification standard (numbering follows the crypto signal system this
+library was extracted from):
 
 1. Trial registry (structural)      -> trialgate.registry
 2. Data floor (statistical)         -> judged here
