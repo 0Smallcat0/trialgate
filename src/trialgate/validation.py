@@ -103,19 +103,29 @@ def deflated_sharpe_ratio(
     if periods_per_year < 1:
         msg = "periods_per_year must be at least 1"
         raise ValidationInputError(msg)
-    # Var(SR_annual / sqrt(p)) == Var(SR_annual) / p.
-    trial_sharpe_variance = (
-        statistics.pvariance(trial_sharpes) / periods_per_year if len(trial_sharpes) > 1 else 0.0
-    )
     observations = len(returns)
     if observations < 3:
         msg = "returns must contain at least 3 observations"
         raise ValidationInputError(msg)
+    _require_finite("returns", returns)
+    _require_finite("trial_sharpes", trial_sharpes)
 
     stdev = statistics.stdev(returns)
     if stdev == 0.0:
         msg = "returns must not be constant"
         raise ValidationInputError(msg)
+    if effective_trials > 1 and len(trial_sharpes) < 2:
+        # One Sharpe has no spread, and a spread of zero would deflate by
+        # nothing: N trials claimed, none charged for.
+        msg = (
+            f"effective_trials={effective_trials} needs the Sharpe ratios of at least "
+            f"2 trials to estimate their spread; got {len(trial_sharpes)}"
+        )
+        raise ValidationInputError(msg)
+    # Var(SR_annual / sqrt(p)) == Var(SR_annual) / p.
+    trial_sharpe_variance = (
+        statistics.pvariance(trial_sharpes) / periods_per_year if len(trial_sharpes) > 1 else 0.0
+    )
     observed_sharpe = statistics.fmean(returns) / stdev
 
     normal = statistics.NormalDist()
@@ -175,6 +185,12 @@ def observations_required_for_dsr(
     beaten by chance.
     """
 
+    if not 0.5 < target_dsr < 1.0:
+        # At or below 0.5 any positive edge already clears the target at every
+        # sample size, and squaring a negative threshold would report the
+        # sample size of the mirror-image target instead.
+        msg = f"target_dsr must be in (0.5, 1), got {target_dsr}"
+        raise ValidationInputError(msg)
     measured = deflated_sharpe_ratio(
         returns,
         trial_sharpes=trial_sharpes,
@@ -247,14 +263,29 @@ def probability_of_backtest_overfitting(
     if any(len(row) != strategies for row in performance_matrix):
         msg = "performance_matrix rows must have equal length"
         raise ValidationInputError(msg)
+    for row in performance_matrix:
+        _require_finite("performance_matrix", row)
 
     usable_rows = observations - (observations % block_count)
     block_size = usable_rows // block_count
+    half = block_count // 2
+    split_size = block_size * half
+    if split_size < 2:
+        msg = (
+            f"each half of the split would hold {split_size} row, too few for a Sharpe "
+            "ratio; supply at least 4 rows for block_count=2"
+        )
+        raise ValidationInputError(msg)
 
     # Every split needs each column's Sharpe over its half of the blocks.
     # Recomputing those from raw rows repeats the same additions across all
     # C(S, S/2) splits. Sum and sum-of-squares per block compose additively,
     # so accumulate them once and assemble each split from S/2 of them.
+    # Each column is shifted by its first value first: the variance is
+    # unchanged, but sum-of-squares minus square-of-sum no longer cancels
+    # catastrophically, so a constant column scores exactly zero instead of a
+    # rounding residue divided by a near-zero spread.
+    shifts = list(performance_matrix[0])
     block_sums: list[list[float]] = []
     block_squares: list[list[float]] = []
     for block in range(block_count):
@@ -262,21 +293,19 @@ def probability_of_backtest_overfitting(
         squares = [0.0] * strategies
         for row in performance_matrix[block * block_size : (block + 1) * block_size]:
             for column in range(strategies):
-                value = row[column]
+                value = row[column] - shifts[column]
                 sums[column] += value
                 squares[column] += value * value
         block_sums.append(sums)
         block_squares.append(squares)
 
-    half = block_count // 2
-    split_size = block_size * half
     overfit_count = 0
     combos = list(combinations(range(block_count), half))
     for train_blocks in combos:
         train_set = frozenset(train_blocks)
         test_blocks = tuple(block for block in range(block_count) if block not in train_set)
-        train_scores = _split_sharpes(block_sums, block_squares, train_blocks, split_size)
-        test_scores = _split_sharpes(block_sums, block_squares, test_blocks, split_size)
+        train_scores = _split_sharpes(block_sums, block_squares, shifts, train_blocks, split_size)
+        test_scores = _split_sharpes(block_sums, block_squares, shifts, test_blocks, split_size)
         best_in_sample = max(range(strategies), key=lambda column: train_scores[column])
         best_out_of_sample = test_scores[best_in_sample]
         rank = sum(1 for score in test_scores if score <= best_out_of_sample)
@@ -295,14 +324,13 @@ def probability_of_backtest_overfitting(
 def _split_sharpes(
     block_sums: list[list[float]],
     block_squares: list[list[float]],
+    shifts: list[float],
     blocks: tuple[int, ...],
     split_size: int,
 ) -> list[float]:
-    """Per-column Sharpe over the union of ``blocks``, from block statistics."""
+    """Per-column Sharpe over the union of ``blocks``, from shifted block statistics."""
 
     strategies = len(block_sums[0])
-    if split_size < 2:
-        return [0.0] * strategies
     totals = [0.0] * strategies
     squares = [0.0] * strategies
     for block in blocks:
@@ -313,11 +341,20 @@ def _split_sharpes(
             squares[column] += block_square[column]
     scores: list[float] = []
     for column in range(strategies):
-        mean = totals[column] / split_size
+        shifted_mean = totals[column] / split_size
         # Sample variance (ddof=1), matching statistics.stdev.
-        variance = (squares[column] - totals[column] * mean) / (split_size - 1)
+        variance = (squares[column] - totals[column] * shifted_mean) / (split_size - 1)
+        mean = shifts[column] + shifted_mean
         scores.append(mean / math.sqrt(variance) if variance > 0.0 else 0.0)
     return scores
+
+
+def _require_finite(name: str, values: Sequence[float]) -> None:
+    # NaN compares false against every threshold, so it would not fail loudly
+    # anywhere downstream: it would quietly decide argmax and rank instead.
+    if not all(math.isfinite(value) for value in values):
+        msg = f"{name} must contain only finite numbers (found NaN or infinity)"
+        raise ValidationInputError(msg)
 
 
 def _skewness(values: list[float]) -> float:

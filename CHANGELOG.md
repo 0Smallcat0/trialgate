@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **PBO scored a constant-return column at a Sharpe of ~2e7.** The fast CSCV
+  path computed variance as sum-of-squares minus squared-sum, which leaves a
+  rounding residue (~1e-20) on a constant column instead of zero. A cash-like
+  trial earning 0.169% every period then won every in-sample split and topped
+  every out-of-sample rank: PBO came out **0.0** on a matrix whose literal
+  definition gives **0.4**. Each column is now shifted by its first value
+  before accumulating, which leaves the variance unchanged and the constant
+  column at exactly zero.
+- **NaN and infinity are refused** by `probability_of_backtest_overfitting()`
+  and `deflated_sharpe_ratio()` (returns and `trial_sharpes`). A NaN from a
+  backtest's first bar previously decided CSCV's argmax and rank silently, and
+  crashed the DSR with an `AttributeError` from inside `statistics`.
+- **`deflated_sharpe_ratio()` refuses `effective_trials > 1` with fewer than
+  two `trial_sharpes`.** One Sharpe has no spread, so the expected maximum was
+  set to 0 and the "deflated" ratio deflated by nothing.
+- **`probability_of_backtest_overfitting()` refuses splits of one row**
+  (`block_count=2` with fewer than 4 rows). Every Sharpe there was scored 0.0
+  and PBO came out a passing 0.0.
+- **`observations_required_for_dsr()` refuses `target_dsr` outside (0.5, 1).**
+  The inversion squares the normal quantile, so a target of 0.05 reported the
+  sample size for 0.95, and 1.0 failed inside `statistics`.
+
+### Tests
+
+- Cross-checks against the worked example in Bailey & López de Prado (2014):
+  SR_0 = 0.1132 and DSR = 0.9004 are reproduced; DSR against a reference
+  written from raw sums; PBO against the paper's logit definition, and its
+  invariance to column order and positive rescaling.
+
 ## 0.5.1
 
 ### Fixed
