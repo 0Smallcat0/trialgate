@@ -4,6 +4,29 @@
 
 ### Added
 
+- **Trial capture from the optimizer** (`trialgate.capture`). The trial count
+  no longer depends on remembering to register:
+  - `import_freqtrade_results()` / `trialgate import-freqtrade` registers every
+    epoch of a freqtrade hyperopt (`.fthypt`, a file or the results directory)
+    with its parameters, fees and daily returns. Every calendar day of the
+    backtest is a period; the returns compound back to freqtrade's
+    `profit_total`. Re-importing registers only new epochs, and a holdout
+    breach refuses the whole import before anything is written. Tested on a
+    real freqtrade results file.
+  - `OptunaRecorder`, an Optuna callback (no Optuna import), registers complete
+    and pruned trials as the study runs; `import_optuna_study()` backfills.
+- **Gate 6 is now a computation** (`trialgate.live`), replacing the procedural
+  "≥ 3 months of paper trading". `lock_live_bands()` block-bootstraps the
+  candidate's registered returns into bands for cumulative return, drawdown
+  from peak and the longest losing run, calibrated jointly to one false-alarm
+  rate over the whole horizon and measured on independent resamples. The lock
+  cannot be re-chosen. `check_live()` returns STOP, PENDING or PASS and, given
+  the registry, recomputes the bands to detect an edited lock. Each lock
+  reports `power_if_no_edge`, how often the same returns with no edge would be
+  stopped: about one time in ten over 90 days for a Sharpe-1 daily strategy.
+- **Command line**: `import-freqtrade`, `evaluate` (exits 1 when not
+  qualified), `live-lock` and `live-check` (exits 1 on STOP), so the path
+  from hyperopt to a verdict to live monitoring needs no Python.
 - **Serial correlation in the DSR and in annualization.** The PSR/DSR
   standard error and √p annualization assume independent periods, so
   positively autocorrelated returns overstated both. `deflated_sharpe_ratio()`
@@ -28,6 +51,14 @@
 
 - Citations in the docstrings and README now give equation and page numbers
   for Lo (2002) and the PSR/DSR papers.
+
+### Changed
+
+- **Gate 2 counts periods with a return, not the length of the series.** A
+  period that returned exactly zero (flat, in cash) is not evidence, so a
+  strategy in the market on 39 of 2000 days now has 39 observations. This
+  changes verdicts: the demo's best configuration now fails gate 2 as well as
+  gate 4.
 
 ### Fixed
 

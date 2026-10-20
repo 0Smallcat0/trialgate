@@ -3,13 +3,13 @@
 The qualification standard (numbering follows the crypto signal system this
 library was extracted from):
 
-1. Trial registry (structural)      -> trialgate.registry
-2. Data floor (statistical)         -> judged here
+1. Trial registry (structural)      -> trialgate.registry, filled by trialgate.capture
+2. Data floor (statistical)         -> judged here, on periods with a return
 3. PBO <= 0.05 (statistical)        -> computed by trialgate.validation, judged here
 4. DSR >= 0.95 (statistical)        -> computed by trialgate.validation, judged here
 5. Single-use holdout (structural)  -> trialgate.holdout
-6. Paper trading with measured real costs (procedural) -> out of library
-   scope on purpose: it is a live measurement over months, not a computation.
+6. Live deviation (statistical)     -> trialgate.live: bands locked before going
+   live, judged against the live returns as they arrive, so after this report
 7. Stop-line survivability (statistical) -> computed by trialgate.risk, judged here
 8. Declared costs (structural)      -> judged here
 
@@ -145,6 +145,10 @@ def evaluate_registry(
     the self-reported ``metrics`` strings, and gate 7's volatility and drift
     are moments of that same column.
 
+    Gate 2 counts the candidate's periods with a nonzero return, not the
+    length of the series: a strategy flat on 1,961 of 2,000 days has 39 days
+    of evidence, and a calendar would credit it with 2,000.
+
     ``effective_trials`` is required, with no default, because it is the last
     number the library cannot derive: trials from a nested parameter grid are
     correlated, so the honest count is somewhere below the registered N and
@@ -199,13 +203,14 @@ def evaluate_registry(
         autocorrelation=autocorrelation,
     )
     checks = _checks(
-        len(matrix),
+        sum(1 for value in candidate_returns if value != 0.0),
         pbo.pbo,
         dsr.deflated_sharpe_ratio,
         min_observations,
         max_pbo,
         min_dsr,
         _autocorrelation_detail(dsr, candidate_returns, periods_per_year, min_dsr),
+        periods=len(matrix),
     )
 
     if stop_loss_fraction is not None:
@@ -348,7 +353,15 @@ def _checks(
     max_pbo: float,
     min_dsr: float,
     dsr_detail: str = "",
+    periods: int | None = None,
 ) -> tuple[GateCheck, ...]:
+    shortfall = f"{min_observations - observations} more observations needed"
+    if periods is not None and observations < periods:
+        shortfall = (
+            f"only {observations} of {periods} periods had a return; a period that "
+            f"returned exactly zero is not evidence. {min_observations - observations} "
+            "more needed"
+        )
     return (
         GateCheck(
             gate="data floor (gate 2)",
@@ -356,11 +369,7 @@ def _checks(
             observed=float(observations),
             threshold=float(min_observations),
             comparison=">=",
-            detail=(
-                ""
-                if observations >= min_observations
-                else f"{min_observations - observations} more observations needed"
-            ),
+            detail="" if observations >= min_observations else shortfall,
         ),
         GateCheck(
             gate="PBO (gate 3)",

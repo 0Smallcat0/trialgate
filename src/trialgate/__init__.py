@@ -8,6 +8,12 @@ check, and threshold gates that combine them into a verdict.
 """
 
 from trialgate.autocorrelation import AutocorrelationDiagnostics
+from trialgate.capture import (
+    ImportReport,
+    OptunaRecorder,
+    import_freqtrade_results,
+    import_optuna_study,
+)
 from trialgate.gates import (
     DEFAULT_MAX_PBO,
     DEFAULT_MAX_STOP_BREACH,
@@ -25,6 +31,16 @@ from trialgate.holdout import (
     load_holdout,
     require_data_allowed,
     spend_holdout,
+)
+from trialgate.live import (
+    BandSet,
+    LiveBands,
+    LiveBandsError,
+    LiveCheck,
+    check_live,
+    compute_live_bands,
+    load_live_bands,
+    lock_live_bands,
 )
 from trialgate.registry import (
     ChainReport,
@@ -69,6 +85,7 @@ __all__ = [
     "AnnualizedSharpe",
     "AutocorrelationDiagnostics",
     "AutocorrelationMode",
+    "BandSet",
     "ChainReport",
     "DataRequirement",
     "DeflatedSharpeResult",
@@ -76,6 +93,11 @@ __all__ = [
     "GateReport",
     "HoldoutState",
     "HoldoutViolationError",
+    "ImportReport",
+    "LiveBands",
+    "LiveBandsError",
+    "LiveCheck",
+    "OptunaRecorder",
     "PBOResult",
     "RegistryTamperError",
     "RiskInputError",
@@ -85,14 +107,20 @@ __all__ = [
     "ValidationInputError",
     "append_trial",
     "assess_stop_line",
+    "check_live",
+    "compute_live_bands",
     "config_hash_for",
     "deflated_sharpe_ratio",
     "evaluate_gates",
     "evaluate_registry",
+    "import_freqtrade_results",
+    "import_optuna_study",
     "initialize_holdout",
     "load_holdout",
+    "load_live_bands",
     "load_trials",
     "lo_annualized_sharpe",
+    "lock_live_bands",
     "max_volatility_for_stop",
     "observations_required_for_dsr",
     "performance_matrix",

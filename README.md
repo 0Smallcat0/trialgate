@@ -30,7 +30,8 @@ Best in-sample annualized Sharpe: 1.20   (entry=150 exit=20 vol=20/0.7)
 Registered trials (the honest N): 450
 OK    450 trials, sealed against edits: 1-449
 
-PASS  data floor (gate 2): 2000 >= 1000
+FAIL  data floor (gate 2): 39 >= 1000  -- only 39 of 2000 periods had a return; a
+      period that returned exactly zero is not evidence. 961 more needed
 PASS  PBO (gate 3): 0.0418803 <= 0.05
 FAIL  DSR (gate 4): 0.603118 >= 0.95  -- WARNING returns are serially correlated
       (lag-1 autocorrelation +0.35, Ljung-Box Q(10) p=4.5e-160), which this DSR
@@ -43,14 +44,79 @@ NOT QUALIFIED
 ```
 
 Sharpe 1.20 is a number people quit their jobs over. There is nothing in that
-data. Note which gate caught it: PBO passed, comfortably. One gate clearing is
-not the same as a strategy clearing, which is why there is more than one. And
-the 1.20 is flattering twice over: the winning configuration holds a position
-on 39 of 2000 days, bunched into a few runs of up days, so its returns are
-serially correlated and annualizing by √252 overstates them (see
-[Serially correlated returns](#serially-correlated-returns)). The
+data. Note which gates caught it, and which did not: PBO passed, comfortably.
+One gate clearing is not the same as a strategy clearing, which is why there is
+more than one. The winning configuration holds a position on 39 of 2000 days;
+the other 1961 days it sat in cash and returned exactly zero, so the Sharpe
+rests on 39 observations, not 2000. Those 39 are bunched into a few runs of up
+days, so they are also serially correlated and annualizing by √252 overstates
+them (see [Serially correlated returns](#serially-correlated-returns)). The
 demo's source is also the integration example — swap its price series and its
 backtest for yours and the rest is unchanged.
+
+## From a freqtrade hyperopt, one command
+
+If you optimize with freqtrade, the registry already exists: every epoch
+hyperopt evaluated is in `user_data/hyperopt_results/*.fthypt`, including the
+ones it did not show you.
+
+```bash
+trialgate import-freqtrade user_data/hyperopt_results --registry state/registry.jsonl
+```
+
+That registers each epoch as a trial with its daily returns (every calendar day
+of the backtest, compounding back to freqtrade's own `profit_total`), its fees
+and its parameters, and prints the command that judges freqtrade's pick.
+Importing again registers only new epochs. Here is a real one: the bundled
+`SampleStrategy`, 4h candles on BTC/USDT and ETH/USDT through 2024, 20 epochs.
+freqtrade's best epoch made 5 trades, won all 5, and reports a Sharpe of 39.7:
+
+```
+registered 20 new trials (1-20) into state/registry.jsonl from 1 file(s); 0 were already registered
+freqtrade's own pick (lowest loss) is trial 4, strategy_SampleStrategy_2026-10-20_18-44-48.fthypt#4. Judge it with:
+  trialgate evaluate state/registry.jsonl --trial 4 --periods-per-year 365 --effective-trials 20 --strategy SampleStrategy
+
+FAIL  data floor (gate 2): 5 >= 1000  -- only 5 of 367 periods had a return; a
+      period that returned exactly zero is not evidence. 995 more needed
+FAIL  PBO (gate 3): 0.734654 <= 0.05
+FAIL  DSR (gate 4): 0.11821 >= 0.95
+PASS  declared costs (gate 8): 20 >= 20
+NOT QUALIFIED
+```
+
+Five winning trades are five data points. A PBO of 0.73 says the epoch that
+looks best in one half of the year is below the median in the other half most
+of the time. `evaluate` exits 1 when the trial is not qualified, so it can sit
+in front of a deploy script.
+
+With Optuna, register every trial as the study runs. trialgate does not import
+Optuna; your objective stores the returns on the trial:
+
+```python
+from trialgate import OptunaRecorder
+
+
+def objective(trial):
+    returns = my_backtest_returns(trial.suggest_int("lookback", 5, 200))
+    trial.set_user_attr("period_returns", returns)
+    return my_sharpe(returns)
+
+
+recorder = OptunaRecorder(
+    "state/registry.jsonl",
+    strategy_id="daily_trend",
+    universe=("BTCUSDT",),
+    data_start=START,
+    data_end=END,
+    cost_assumptions={"round_trip_bps": "25", "charged": "true"},
+)
+study.optimize(objective, n_trials=500, callbacks=[recorder])
+```
+
+Pruned trials are registered too, because a run you stopped early was still a
+try. They count in N, but without a full return series they keep gate 3 from
+building its matrix: attach the series before pruning, or do not prune
+backtests. `import_optuna_study()` backfills a study that already ran.
 
 ## Why the formula alone is not enough
 
@@ -76,9 +142,11 @@ columns left for you to curate.
 Stated up front, because a gate that oversells itself is the failure mode it
 exists to prevent.
 
-- **It cannot make you register anything.** Nothing watches your process. The
-  chain proves the log was not rewritten; it cannot prove the log is complete.
-  You can always run a backtest outside it and never tell anyone.
+- **It cannot make you register everything.** `import-freqtrade` and the
+  Optuna callback capture every run the optimizer made, so for those N no
+  longer depends on memory. A notebook, another engine or a quick check run
+  outside them still depends on you. The chain proves the log was not
+  rewritten; it cannot prove the log is complete.
 - **It does not backtest.** Bring your own engine, data, and return series.
   This is a judge, not a player.
 - **Passing is necessary, not sufficient.** In a verified 2022 case study the
@@ -93,16 +161,17 @@ exists to prevent.
 
 Built from the anti-overfitting literature (Bailey & López de Prado, 2014;
 Bailey, Borwein, López de Prado & Zhu, 2015; Arnott, Harvey & Markowitz, 2019)
-and, for gate 7, the first-passage identity for Brownian motion with drift:
+the circular block bootstrap for gate 6 (Politis & Romano, 1992) and, for
+gate 7, the first-passage identity for Brownian motion with drift:
 
 | Gate | What it enforces | Module |
 |------|------------------|--------|
 | 1. Trial registry | Every backtest of every variant is recorded in a tamper-evident append-only chain; unregistered results are void. The registry maintains the honest trial count N. | `trialgate.registry` |
-| 2. Data floor | Enough observations (default ≥ 1,000 daily) spanning real regimes. | `trialgate.gates` |
+| 2. Data floor | Enough observations (default ≥ 1,000 daily) spanning real regimes. Only periods with a return count: a day spent flat in cash is not evidence. | `trialgate.gates` |
 | 3. PBO ≤ 0.05 | Probability of Backtest Overfitting via CSCV — all C(S, S/2) symmetric train/test splits, over a matrix assembled from the registry rather than handed in. | `trialgate.validation` |
 | 4. DSR ≥ 0.95 | Deflated Sharpe Ratio — the observed Sharpe must beat the expected maximum of N noise trials, adjusted for skew, kurtosis, and sample length. | `trialgate.validation` |
 | 5. Single-use holdout | The most recent data slice is locked at first backtest; spending it is a one-way, logged event. Iterated out-of-sample is not out-of-sample. | `trialgate.holdout` |
-| 6. Paper trading | ≥ 3 months live paper execution with measured real costs. Procedural — deliberately **not** in this library: it is a measurement, not a computation. | — |
+| 6. Live deviation | Before going live, lock bands for cumulative return, drawdown from peak and the longest losing run, bootstrapped from the candidate's own registered returns with a joint false-alarm rate (default 5%). Live or paper returns that leave them mean STOP. The lock also states how often a strategy with no edge at all would stay inside, so a PASS is not overread. | `trialgate.live` |
 | 7. Stop-line survivability | The probability that the strategy's own volatility trips the operator's hard stop, from an exact first-passage formula rather than a simulation. Reports the volatility to size down to. Off unless you supply a stop-loss policy — defaulting one would be inventing your risk appetite. | `trialgate.risk` |
 | 8. Declared costs | Every trial in the registry priced execution above zero. A missing key and an explicit `"0"` are the same verdict; only one of them looks like an oversight. | `trialgate.gates` |
 
@@ -254,6 +323,62 @@ conservative choice: it can only reject, never wave something through. The
 library will not guess for you, because a guess dressed as a computation is
 the failure mode this whole package exists to prevent.
 
+## Going live: write the stop down first
+
+Money is lost after the backtest, not in it. The strategy goes live, runs below
+what the backtest promised, and keeps running because nobody decided in advance
+how far below was too far. Gate 6 decides it before the first live period:
+
+```bash
+trialgate live-lock state/registry.jsonl --trial 1 --horizon 90 --out state/live_bands.json
+```
+
+```
+LOCKED  gate 6 for trial 1 -> state/live_bands.json
+        over 90 live periods, STOP if cumulative return falls below -21.26%, drawdown
+        exceeds 26.75%, or 11 losing periods run in a row (tighter bands apply earlier;
+        see the file)
+        false alarm on a strategy that is what its backtest says: 4.5% (target 5%)
+        the same returns with no edge are stopped 14% of the time; a longer horizon
+        raises that
+```
+
+The bands come from block-bootstrapping the trial's own registered returns (a
+Sharpe-1 daily series here), one bound per period for each of the three
+statistics, calibrated jointly so the whole horizon carries one 5% false-alarm
+budget rather than 5% per period. The lock file refuses to be rewritten with
+different arguments, and `--registry` on the check recomputes the bands to
+confirm nobody edited them. Then feed it the live or paper returns as they
+arrive (a JSON list, one number per line, or a CSV whose last column is the
+return):
+
+```bash
+trialgate live-check state/live_bands.json live_returns.csv --registry state/registry.jsonl
+```
+
+```
+PENDING  live deviation (gate 6): 30 of 90 periods inside the locked bands so far
+         (cumulative -4.16%, drawdown 10.89%, longest losing run 9)
+```
+
+A series averaging −0.8% a day (a bug, or costs far above the model) was
+stopped on day 2, and the command exits 1:
+
+```
+STOP  live deviation (gate 6): period 2 of 90, cumulative return -4.79% < -4.27%
+      a strategy that is what its backtest says crosses a band 5% of the time over
+      the horizon; this is the condition written down before going live. Stop
+      trading it.
+```
+
+The last line of the lock is the honest one. If the edge was luck, the live
+returns look like the backtest's with the mean removed, and over 90 days that
+is stopped only about one time in ten: a quarter of live data cannot tell a
+Sharpe-1 strategy from no strategy, and a PASS says so instead of implying
+more. What gate 6 does catch quickly is a live series that does not look like
+the backtest at all: look-ahead and other bugs, fills and costs worse than
+modeled. `horizon` has no default for the same reason the stop line has none.
+
 ## How the registry is made auditable
 
 Each record carries `prev_hash`: the SHA-256 over every preceding line of the
@@ -382,6 +507,11 @@ produced.
   Matrix Estimation* (Econometrica, 1991); Andrews & Monahan — *An Improved
   Heteroskedasticity and Autocorrelation Consistent Covariance Matrix
   Estimator* (Econometrica, 1992)
+- Politis & Romano — *A Circular Block-Resampling Procedure for Stationary
+  Data* (in *Exploring the Limits of Bootstrap*, Wiley, 1992); Hall, Horowitz
+  & Jing — *On Blocking Rules for the Bootstrap with Dependent Data*
+  (Biometrika 82(3), 1995), whose variance-estimation rate T^(1/3) sets the
+  default block length
 
 ## License
 
