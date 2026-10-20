@@ -293,3 +293,21 @@ def test_pbo_refuses_splits_too_short_for_a_sharpe_ratio() -> None:
         [[0.01, -0.02], [-0.03, 0.04], [0.02, 0.01], [0.0, -0.01]], block_count=2
     )
     assert result.combinations_evaluated == 2
+
+
+def test_a_column_constant_after_its_first_row_scores_zero_not_a_rounding_residue() -> None:
+    """Shifting by the first row does not cancel a column that is constant elsewhere.
+
+    A trial that pays an entry cost on its first bar and then earns a flat
+    0.169% is constant over every split, but not equal to its first value, so
+    the shifted sums still left a rounding residue and the column scored a
+    Sharpe in the millions.
+    """
+
+    rng = random.Random(3)
+    matrix = [[0.00169] + [rng.gauss(0.0, 0.01) for _ in range(5)] for _ in range(480)]
+    matrix[0][0] = -0.0021
+
+    pbo = probability_of_backtest_overfitting(matrix, block_count=8).pbo
+
+    assert pbo == pytest.approx(_logit_pbo(matrix, 8))

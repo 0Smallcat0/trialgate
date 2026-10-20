@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import statistics
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import combinations
@@ -342,10 +343,18 @@ def _split_sharpes(
     scores: list[float] = []
     for column in range(strategies):
         shifted_mean = totals[column] / split_size
+        spread = squares[column] - totals[column] * shifted_mean
+        # A column constant over this split but not equal to its shift (one
+        # odd first bar, then flat) still cancels to a rounding residue rather
+        # than zero. Summing n terms errs by at most about n * epsilon of the
+        # sum of squares, so a spread inside that bound is no spread at all.
+        if spread <= 4.0 * split_size * sys.float_info.epsilon * squares[column]:
+            scores.append(0.0)
+            continue
         # Sample variance (ddof=1), matching statistics.stdev.
-        variance = (squares[column] - totals[column] * shifted_mean) / (split_size - 1)
+        variance = spread / (split_size - 1)
         mean = shifts[column] + shifted_mean
-        scores.append(mean / math.sqrt(variance) if variance > 0.0 else 0.0)
+        scores.append(mean / math.sqrt(variance))
     return scores
 
 
