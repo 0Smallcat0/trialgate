@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- **Serial correlation in the DSR and in annualization.** The PSR/DSR
+  standard error and √p annualization assume independent periods, so
+  positively autocorrelated returns overstated both. `deflated_sharpe_ratio()`
+  now estimates the Sharpe estimator's long-run variance (Lo 2002, GMM case,
+  AR(1)-prewhitened Bartlett HAC) and reports the DSR on the equivalent number
+  of independent observations, with Ljung-Box diagnostics
+  (`AutocorrelationDiagnostics`). `autocorrelation="report"` (default) keeps
+  the IID value bit for bit; `"adjust"` judges the adjusted value; `"ignore"`
+  skips the estimate. `evaluate_registry()` takes the same argument and, by
+  default, attaches a warning to gate 4 when the correlation is significant.
+  `observations_required_for_dsr()` scales its answer by the variance ratio
+  under `"adjust"`.
+- **`lo_annualized_sharpe()`**: annual Sharpe by Lo's η(q) next to the √q
+  figure. Uses the sample autocorrelations up to the Andrews (1991) bandwidth
+  by default, or all q − 1 of Lo's formula with `max_lag=periods_per_year - 1`.
+- The demo's gate 4 line now carries that warning: the best of 450
+  configurations has lag-1 autocorrelation +0.35, an adjusted DSR of 0.574
+  (0.603 unadjusted) and an η(q) annual Sharpe of 0.67 against 1.20 by √252.
+  The verdict is unchanged.
+
 ### Fixed
 
 - **PBO scored a constant-return column at a Sharpe of ~2e7.** The fast CSCV
@@ -40,6 +62,12 @@
 
 ### Tests
 
+- Autocorrelation: the default DSR pinned bit for bit to the previous release
+  on IID data; the adjusted Sharpe standard error against Monte Carlo and the
+  AR(1) asymptotic variance for φ from −0.5 to 0.8; DSR calibration on
+  autocorrelated nulls; η(q) against Lo's AR(1) closed form and simulated
+  q-period sums; Ljung-Box and the HAC against numpy/scipy reimplementations.
+  numpy and scipy are test-only `dev` extras.
 - Cross-checks against the worked example in Bailey & López de Prado (2014):
   SR_0 = 0.1132 and DSR = 0.9004 are reproduced; DSR against a reference
   written from raw sums; PBO against the paper's logit definition, and its

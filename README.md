@@ -32,7 +32,11 @@ OK    450 trials, sealed against edits: 1-449
 
 PASS  data floor (gate 2): 2000 >= 1000
 PASS  PBO (gate 3): 0.0418803 <= 0.05
-FAIL  DSR (gate 4): 0.603118 >= 0.95
+FAIL  DSR (gate 4): 0.603118 >= 0.95  -- WARNING returns are serially correlated
+      (lag-1 autocorrelation +0.35, Ljung-Box Q(10) p=4.5e-160), which this DSR
+      assumes away: adjusted for it, DSR is 0.57409 on 1022 effective of 2000
+      observations (would FAIL); annualized Sharpe 1.20 by sqrt(252) is 0.67 by
+      Lo's eta(q). Pass autocorrelation="adjust" to judge the adjusted value
 PASS  stop-line survivability (gate 7): 1.10249e-15 <= 0.1
 PASS  declared costs (gate 8): 450 >= 450
 NOT QUALIFIED
@@ -40,7 +44,11 @@ NOT QUALIFIED
 
 Sharpe 1.20 is a number people quit their jobs over. There is nothing in that
 data. Note which gate caught it: PBO passed, comfortably. One gate clearing is
-not the same as a strategy clearing, which is why there is more than one. The
+not the same as a strategy clearing, which is why there is more than one. And
+the 1.20 is flattering twice over: the winning configuration holds a position
+on 39 of 2000 days, bunched into a few runs of up days, so its returns are
+serially correlated and annualizing by √252 overstates them (see
+[Serially correlated returns](#serially-correlated-returns)). The
 demo's source is also the integration example — swap its price series and its
 backtest for yours and the rest is unchanged.
 
@@ -114,6 +122,39 @@ region when measured against simulation, and a gate is the wrong place for a
 number that is wrong exactly where it matters.
 
 Zero dependencies, pure standard library, `mypy --strict`, Python 3.11+.
+
+## Serially correlated returns
+
+The DSR's standard error and the usual √p annualization both assume one
+period's return says nothing about the next. Smoothed marks, illiquid holdings,
+overlapping signals and trend filters break that, almost always in the
+flattering direction: with lag-1 autocorrelation 0.5 the IID standard error of
+the Sharpe ratio is √3 too small, and about one zero-edge strategy in six clears
+a 0.95 DSR instead of one in twenty.
+
+trialgate estimates the long-run variance of the Sharpe estimator (Lo 2002,
+non-IID case; AR(1)-prewhitened Bartlett kernel, Andrews & Monahan 1992) and
+recomputes the DSR on the equivalent number of independent observations:
+
+```
+z_adj = (SR - SR_0) * sqrt((T - 1) / ratio) / sqrt(1 - skew*SR + (kurt - 1)/4 * SR^2)
+T_eff = 1 + (T - 1) / ratio,   ratio = long-run / IID variance of SR-hat
+```
+
+`lo_annualized_sharpe()` annualizes with Lo's `eta(q) = q / sqrt(q + 2 *
+sum_{k<q} (q - k) rho_k)` in place of √q.
+
+| `autocorrelation=` | Gate 4 judges | Report |
+|---|---|---|
+| `"report"` (default) | the IID DSR, exactly as before | a warning with the adjusted DSR, effective sample size and η(q) Sharpe when Ljung-Box finds the correlation significant (p < 0.05) |
+| `"adjust"` | the adjusted DSR | the IID value alongside |
+| `"ignore"` | the IID DSR | nothing; the estimate is skipped |
+
+The default leaves verdicts where they were on purpose: a significance test
+fires on 5% of IID series by construction, and a gate whose verdict changes
+between releases, or between two runs of the same strategy on either side of
+p = 0.05, is a gate nobody can reason about. The warning says what the adjusted
+verdict would be; `"adjust"` makes it binding.
 
 ## Quickstart
 
@@ -308,6 +349,13 @@ produced.
   Overfitting* (Journal of Computational Finance, 2015)
 - Arnott, Harvey & Markowitz — *A Backtesting Protocol in the Era of Machine
   Learning* (Journal of Financial Data Science, 2019)
+- Lo — *The Statistics of Sharpe Ratios* (Financial Analysts Journal, 2002)
+- Bailey & López de Prado — *The Sharpe Ratio Efficient Frontier* (Journal of
+  Risk, 2012)
+- Andrews — *Heteroskedasticity and Autocorrelation Consistent Covariance
+  Matrix Estimation* (Econometrica, 1991); Andrews & Monahan — *An Improved
+  Heteroskedasticity and Autocorrelation Consistent Covariance Matrix
+  Estimator* (Econometrica, 1992)
 
 ## License
 
