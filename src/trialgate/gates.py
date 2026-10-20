@@ -35,7 +35,10 @@ from pathlib import Path
 from trialgate.registry import load_trials, performance_matrix
 from trialgate.risk import assess_stop_line
 from trialgate.validation import (
+    AutocorrelationMode,
+    DeflatedSharpeResult,
     deflated_sharpe_ratio,
+    lo_annualized_sharpe,
     probability_of_backtest_overfitting,
     sharpe_ratio,
 )
@@ -130,6 +133,7 @@ def evaluate_registry(
     horizon_years: float = 1.0,
     max_stop_breach: float = DEFAULT_MAX_STOP_BREACH,
     require_declared_costs: bool = True,
+    autocorrelation: AutocorrelationMode = "report",
 ) -> GateReport:
     """Judge the gates for one registered trial, using only registered data.
 
@@ -151,6 +155,14 @@ def evaluate_registry(
     default, for the opposite reason: a stop line is a policy, and defaulting
     one would be inventing the operator's risk appetite rather than measuring
     against it. Omitting it skips gate 7 instead of guessing.
+
+    ``autocorrelation`` governs gate 4 when the candidate's returns are
+    serially correlated, which the DSR formula assumes away. The default,
+    ``"report"``, keeps the IID verdict and, when the Ljung-Box test finds
+    the correlation significant, attaches a warning with the
+    autocorrelation-adjusted DSR, the effective sample size, and the
+    annualized Sharpe by Lo's eta(q). ``"adjust"`` judges gate 4 on the
+    adjusted DSR instead; ``"ignore"`` skips the estimate.
     """
 
     trials = [
@@ -181,6 +193,7 @@ def evaluate_registry(
         trial_sharpes=trial_sharpes,
         periods_per_year=periods_per_year,
         effective_trials=effective_trials,
+        autocorrelation=autocorrelation,
     )
     checks = _checks(
         len(matrix),
@@ -189,6 +202,7 @@ def evaluate_registry(
         min_observations,
         max_pbo,
         min_dsr,
+        _autocorrelation_detail(dsr, candidate_returns, periods_per_year, min_dsr),
     )
 
     if stop_loss_fraction is not None:
@@ -232,6 +246,39 @@ def evaluate_registry(
         )
 
     return GateReport(checks=checks)
+
+
+def _autocorrelation_detail(
+    dsr: DeflatedSharpeResult, returns: list[float], periods_per_year: int, min_dsr: float
+) -> str:
+    """Gate 4's warning (``"report"``) or provenance (``"adjust"``); empty otherwise."""
+
+    diagnostics = dsr.autocorrelation
+    if diagnostics is None or dsr.adjusted_deflated_sharpe_ratio is None:
+        return ""
+    if not dsr.autocorrelation_adjusted and not diagnostics.significant:
+        return ""
+    test = (
+        f"lag-1 autocorrelation {diagnostics.first_order_autocorrelation:+.2f}, "
+        f"Ljung-Box Q({diagnostics.ljung_box_lags}) p={diagnostics.ljung_box_p_value:.2g}"
+    )
+    effective = (
+        f"{diagnostics.effective_observations:.0f} effective of {dsr.observations} observations"
+    )
+    if dsr.autocorrelation_adjusted:
+        return (
+            f"autocorrelation-adjusted on {effective} ({test}); "
+            f"IID DSR {dsr.iid_deflated_sharpe_ratio:g}"
+        )
+    annual = lo_annualized_sharpe(returns, periods_per_year=periods_per_year)
+    verdict = "PASS" if dsr.adjusted_deflated_sharpe_ratio >= min_dsr else "FAIL"
+    return (
+        f"WARNING returns are serially correlated ({test}), which this DSR assumes "
+        f"away: adjusted for it, DSR is {dsr.adjusted_deflated_sharpe_ratio:g} on "
+        f"{effective} (would {verdict}); annualized Sharpe {annual.iid_annualized_sharpe:.2f} "
+        f"by sqrt({periods_per_year}) is {annual.annualized_sharpe:.2f} by Lo's eta(q). "
+        'Pass autocorrelation="adjust" to judge the adjusted value'
+    )
 
 
 def _stop_check(breach: float, max_stop_breach: float, detail: str) -> GateCheck:
@@ -287,6 +334,7 @@ def _checks(
     min_observations: int,
     max_pbo: float,
     min_dsr: float,
+    dsr_detail: str = "",
 ) -> tuple[GateCheck, ...]:
     return (
         GateCheck(
@@ -314,5 +362,6 @@ def _checks(
             observed=deflated_sharpe,
             threshold=min_dsr,
             comparison=">=",
+            detail=dsr_detail,
         ),
     )

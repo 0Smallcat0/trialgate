@@ -7,6 +7,7 @@ Sharpe Ratio statistics, a single-use holdout lock, a stop-line survivability
 check, and threshold gates that combine them into a verdict.
 """
 
+from trialgate.autocorrelation import AutocorrelationDiagnostics
 from trialgate.gates import (
     DEFAULT_MAX_PBO,
     DEFAULT_MAX_STOP_BREACH,
@@ -45,11 +46,14 @@ from trialgate.risk import (
     stop_breach_probability,
 )
 from trialgate.validation import (
+    AnnualizedSharpe,
+    AutocorrelationMode,
     DataRequirement,
     DeflatedSharpeResult,
     PBOResult,
     ValidationInputError,
     deflated_sharpe_ratio,
+    lo_annualized_sharpe,
     observations_required_for_dsr,
     probability_of_backtest_overfitting,
     sharpe_ratio,
@@ -62,6 +66,9 @@ __all__ = [
     "DEFAULT_MAX_STOP_BREACH",
     "DEFAULT_MIN_DSR",
     "DEFAULT_MIN_OBSERVATIONS",
+    "AnnualizedSharpe",
+    "AutocorrelationDiagnostics",
+    "AutocorrelationMode",
     "ChainReport",
     "DataRequirement",
     "DeflatedSharpeResult",
@@ -85,6 +92,7 @@ __all__ = [
     "initialize_holdout",
     "load_holdout",
     "load_trials",
+    "lo_annualized_sharpe",
     "max_volatility_for_stop",
     "observations_required_for_dsr",
     "performance_matrix",

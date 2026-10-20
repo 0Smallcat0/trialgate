@@ -4,6 +4,8 @@ Sources:
 - Bailey & Lopez de Prado, "The Deflated Sharpe Ratio" (JPM 2014).
 - Bailey, Borwein, Lopez de Prado & Zhu, "The Probability of Backtest
   Overfitting" (Journal of Computational Finance 2015).
+- Lo, "The Statistics of Sharpe Ratios" (Financial Analysts Journal 2002), for
+  serially correlated returns; see trialgate.autocorrelation.
 
 These statistics operate on measurement floats, not account money, so
 float arithmetic is intentional here (unlike a Decimal trading path).
@@ -17,6 +19,18 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import combinations
+from typing import Literal
+
+from trialgate.autocorrelation import (
+    AutocorrelationDiagnostics,
+    andrews_bandwidth,
+    diagnose,
+    eta,
+    sample_autocorrelations,
+)
+
+AutocorrelationMode = Literal["report", "adjust", "ignore"]
+_AUTOCORRELATION_MODES = ("report", "adjust", "ignore")
 
 _EULER_GAMMA = 0.5772156649015329
 
@@ -27,13 +41,40 @@ class ValidationInputError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class DeflatedSharpeResult:
-    """DSR output with the inputs that produced it."""
+    """DSR output with the inputs that produced it.
+
+    ``deflated_sharpe_ratio`` is the value to judge: the IID statistic unless
+    the call asked for ``autocorrelation="adjust"``. The other two DSR fields
+    carry both readings whenever autocorrelation was examined (every mode but
+    ``"ignore"``), so a report can show what the adjustment would change.
+    """
 
     deflated_sharpe_ratio: float
     observed_sharpe: float
     expected_max_sharpe: float
     effective_trials: int
     observations: int
+    iid_deflated_sharpe_ratio: float | None = None
+    adjusted_deflated_sharpe_ratio: float | None = None
+    autocorrelation: AutocorrelationDiagnostics | None = None
+    autocorrelation_adjusted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class AnnualizedSharpe:
+    """An annualized Sharpe ratio both ways: sqrt(q) and Lo's eta(q).
+
+    ``annualized_sharpe`` = eta(q) * SR uses the sample autocorrelations up to
+    ``max_lag`` (zero beyond it); ``iid_annualized_sharpe`` is sharpe_ratio(),
+    the sqrt(q) figure, which is right only when returns are uncorrelated.
+    """
+
+    annualized_sharpe: float
+    iid_annualized_sharpe: float
+    eta: float
+    periods_per_year: int
+    max_lag: int
+    autocorrelations: tuple[float, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,12 +121,69 @@ def sharpe_ratio(returns: list[float], *, periods_per_year: int) -> float:
     return statistics.fmean(returns) / stdev * math.sqrt(periods_per_year)
 
 
+def lo_annualized_sharpe(
+    returns: list[float],
+    *,
+    periods_per_year: int,
+    max_lag: int | None = None,
+) -> AnnualizedSharpe:
+    """Annualize with Lo's (2002) eta(q) instead of sqrt(q).
+
+    SR(q) = eta(q) * SR, eta(q) = q / sqrt(q + 2 sum_{k=1}^{q-1} (q - k) rho_k),
+    q = ``periods_per_year``. Positive autocorrelation makes eta(q) < sqrt(q):
+    the sqrt(q) figure overstates the annual Sharpe of smoothed returns.
+
+    ``max_lag`` is how many sample autocorrelations enter the sum. Lo's
+    formula uses all q - 1; pass ``max_lag=periods_per_year - 1`` for that,
+    which is the right call for monthly data (11 lags). For daily data, 251
+    sample autocorrelations are mostly noise and that noise is weighted by up
+    to q - 1, so the default truncates at the Andrews (1991) bandwidth of the
+    series -- one or two lags on uncorrelated returns, dozens on a strongly
+    persistent one -- and treats the rest as zero.
+    """
+
+    if periods_per_year < 1:
+        msg = "periods_per_year must be at least 1"
+        raise ValidationInputError(msg)
+    if len(returns) < 3:
+        msg = "returns must contain at least 3 observations"
+        raise ValidationInputError(msg)
+    _require_finite("returns", returns)
+    stdev = statistics.stdev(returns)
+    if stdev == 0.0:
+        msg = "returns must not be constant"
+        raise ValidationInputError(msg)
+    ceiling = min(periods_per_year - 1, len(returns) - 1)
+    if max_lag is None:
+        lags = min(ceiling, max(1, math.floor(andrews_bandwidth(returns))))
+    elif 0 <= max_lag <= ceiling:
+        lags = max_lag
+    else:
+        msg = f"max_lag must be between 0 and {ceiling}, got {max_lag}"
+        raise ValidationInputError(msg)
+    rhos = sample_autocorrelations(returns, lags) if lags else []
+    try:
+        factor = eta(periods_per_year, rhos)
+    except ValueError as error:
+        raise ValidationInputError(str(error)) from error
+    per_period = statistics.fmean(returns) / stdev
+    return AnnualizedSharpe(
+        annualized_sharpe=per_period * factor,
+        iid_annualized_sharpe=sharpe_ratio(returns, periods_per_year=periods_per_year),
+        eta=factor,
+        periods_per_year=periods_per_year,
+        max_lag=lags,
+        autocorrelations=tuple(rhos),
+    )
+
+
 def deflated_sharpe_ratio(
     returns: list[float],
     *,
     trial_sharpes: Sequence[float],
     periods_per_year: int,
     effective_trials: int,
+    autocorrelation: AutocorrelationMode = "report",
 ) -> DeflatedSharpeResult:
     """Probability that the true Sharpe exceeds the expected max of N noise trials.
 
@@ -96,11 +194,26 @@ def deflated_sharpe_ratio(
     inflates the expected maximum by ``periods_per_year`` and false-rejects
     everything. ``effective_trials`` is the correlation-adjusted trial count N;
     a flattering N voids the gate.
+
+    ``autocorrelation`` decides what serial correlation in ``returns`` does.
+    The PSR/DSR variance term assumes independent periods; positively
+    autocorrelated returns make it too small and the DSR too high. In every
+    mode but ``"ignore"`` the long-run variance of the Sharpe estimator is
+    estimated (Lo 2002, GMM case; trialgate.autocorrelation) and the statistic
+    recomputed on the equivalent number of independent observations:
+
+        z_adj = (SR - SR_0) * sqrt((T - 1) / ratio) / sqrt(Mertens term)
+
+    ``"report"`` (default) judges the IID value -- bit-for-bit what earlier
+    releases returned -- and carries the adjusted one alongside for a gate to
+    warn with. ``"adjust"`` judges the adjusted value. ``"ignore"`` skips the
+    estimate.
     """
 
     if effective_trials < 1:
         msg = "effective_trials must be at least 1"
         raise ValidationInputError(msg)
+    _require_mode(autocorrelation)
     if periods_per_year < 1:
         msg = "periods_per_year must be at least 1"
         raise ValidationInputError(msg)
@@ -154,12 +267,33 @@ def deflated_sharpe_ratio(
     statistic = (
         (observed_sharpe - expected_max_sharpe) * math.sqrt(observations - 1.0)
     ) / denominator
+    iid_dsr = normal.cdf(statistic)
+    if autocorrelation == "ignore":
+        return DeflatedSharpeResult(
+            deflated_sharpe_ratio=iid_dsr,
+            observed_sharpe=observed_sharpe,
+            expected_max_sharpe=expected_max_sharpe,
+            effective_trials=effective_trials,
+            observations=observations,
+        )
+
+    diagnostics = diagnose(returns)
+    adjusted_dsr = normal.cdf(
+        (observed_sharpe - expected_max_sharpe)
+        * math.sqrt((observations - 1.0) / diagnostics.variance_ratio)
+        / denominator
+    )
+    adjusting = autocorrelation == "adjust"
     return DeflatedSharpeResult(
-        deflated_sharpe_ratio=normal.cdf(statistic),
+        deflated_sharpe_ratio=adjusted_dsr if adjusting else iid_dsr,
         observed_sharpe=observed_sharpe,
         expected_max_sharpe=expected_max_sharpe,
         effective_trials=effective_trials,
         observations=observations,
+        iid_deflated_sharpe_ratio=iid_dsr,
+        adjusted_deflated_sharpe_ratio=adjusted_dsr,
+        autocorrelation=diagnostics,
+        autocorrelation_adjusted=adjusting,
     )
 
 
@@ -170,6 +304,7 @@ def observations_required_for_dsr(
     periods_per_year: int,
     effective_trials: int,
     target_dsr: float = 0.95,
+    autocorrelation: AutocorrelationMode = "report",
 ) -> DataRequirement:
     """How many observations this candidate would need to clear the DSR gate.
 
@@ -184,6 +319,12 @@ def observations_required_for_dsr(
     is already below the expected maximum of N noise trials, no sample size
     rescues it and ``reachable`` is False -- more data cannot fix having been
     beaten by chance.
+
+    With ``autocorrelation="adjust"`` the requirement is in observations of
+    the series as it is, autocorrelation included: it is the IID requirement
+    scaled by the Sharpe estimator's variance ratio, since each observation
+    carries 1 / ratio of an independent one. ``"report"`` and ``"ignore"``
+    give the IID requirement.
     """
 
     if not 0.5 < target_dsr < 1.0:
@@ -192,11 +333,13 @@ def observations_required_for_dsr(
         # sample size of the mirror-image target instead.
         msg = f"target_dsr must be in (0.5, 1), got {target_dsr}"
         raise ValidationInputError(msg)
+    _require_mode(autocorrelation)
     measured = deflated_sharpe_ratio(
         returns,
         trial_sharpes=trial_sharpes,
         periods_per_year=periods_per_year,
         effective_trials=effective_trials,
+        autocorrelation="adjust" if autocorrelation == "adjust" else "ignore",
     )
     present = len(returns)
     edge = measured.observed_sharpe - measured.expected_max_sharpe
@@ -221,7 +364,10 @@ def observations_required_for_dsr(
         raise ValidationInputError(msg)
 
     threshold = statistics.NormalDist().inv_cdf(target_dsr)
-    required = 1 + math.ceil((threshold * math.sqrt(mertens_term) / edge) ** 2)
+    squared = (threshold * math.sqrt(mertens_term) / edge) ** 2
+    if measured.autocorrelation is not None:
+        squared *= measured.autocorrelation.variance_ratio
+    required = 1 + math.ceil(squared)
     return DataRequirement(
         reachable=True,
         observations_present=present,
@@ -359,6 +505,12 @@ def _split_sharpes(
         mean = shifts[column] + shifted_mean
         scores.append(mean / math.sqrt(variance))
     return scores
+
+
+def _require_mode(mode: str) -> None:
+    if mode not in _AUTOCORRELATION_MODES:
+        msg = f"autocorrelation must be one of {_AUTOCORRELATION_MODES}, got {mode!r}"
+        raise ValidationInputError(msg)
 
 
 def _require_finite(name: str, values: Sequence[float]) -> None:
