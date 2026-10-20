@@ -15,7 +15,9 @@
   skips the estimate. `evaluate_registry()` takes the same argument and, by
   default, attaches a warning to gate 4 when the correlation is significant.
   `observations_required_for_dsr()` scales its answer by the variance ratio
-  under `"adjust"`.
+  under `"adjust"`. The adjustment is trialgate's extension: Bailey & López
+  de Prado's DSR and PSR do not correct for serial correlation (the PSR
+  paper, p. 4, leaves it unaddressed).
 - **`lo_annualized_sharpe()`**: annual Sharpe by Lo's η(q) next to the √q
   figure. Uses the sample autocorrelations up to the Andrews (1991) bandwidth
   by default, or all q − 1 of Lo's formula with `max_lag=periods_per_year - 1`.
@@ -23,6 +25,9 @@
   configurations has lag-1 autocorrelation +0.35, an adjusted DSR of 0.574
   (0.603 unadjusted) and an η(q) annual Sharpe of 0.67 against 1.20 by √252.
   The verdict is unchanged.
+
+- Citations in the docstrings and README now give equation and page numbers
+  for Lo (2002) and the PSR/DSR papers.
 
 ### Fixed
 
@@ -68,6 +73,11 @@
   autocorrelated nulls; η(q) against Lo's AR(1) closed form and simulated
   q-period sums; Ljung-Box and the HAC against numpy/scipy reimplementations.
   numpy and scipy are test-only `dev` extras.
+- Cross-checks against Lo (2002): every cell of Table 2 (η(q) under AR(1),
+  p. 41) to the printed two decimals, and the Sharpe columns of Table 4
+  (p. 44), all 22 funds within the printed rounding. Table 4's SR(12) column
+  needs 11 autocorrelations per fund and the table prints 3, so it is
+  recorded as out of reach rather than fitted.
 - Cross-checks against the worked example in Bailey & López de Prado (2014):
   SR_0 = 0.1132 and DSR = 0.9004 are reproduced; DSR against a reference
   written from raw sums; PBO against the paper's logit definition, and its

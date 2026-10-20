@@ -162,8 +162,10 @@ def evaluate_registry(
     ``"report"``, keeps the IID verdict and, when the Ljung-Box test finds
     the correlation significant, attaches a warning with the
     autocorrelation-adjusted DSR, the effective sample size, and the
-    annualized Sharpe by Lo's eta(q). ``"adjust"`` judges gate 4 on the
-    adjusted DSR instead; ``"ignore"`` skips the estimate.
+    annualized Sharpe by Lo's eta(q) (Lo 2002, Eq. (20) p. 40). ``"adjust"``
+    judges gate 4 on the adjusted DSR instead; ``"ignore"`` skips the
+    estimate. The adjusted DSR is trialgate's extension of Bailey & Lopez de
+    Prado's statistic, not their method; see trialgate.autocorrelation.
     """
 
     trials = [

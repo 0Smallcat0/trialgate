@@ -1,11 +1,14 @@
 """Qualification-gate statistics: Deflated Sharpe Ratio and CSCV/PBO.
 
 Sources:
-- Bailey & Lopez de Prado, "The Deflated Sharpe Ratio" (JPM 2014).
+- Bailey & Lopez de Prado, "The Deflated Sharpe Ratio" (JPM 2014; preprint
+  of July 31, 2014): the DSR, Eq. (2) p. 8, and the expected maximum Sharpe
+  ratio SR_0, Eq. (1) p. 7 / Eq. (6) p. 12.
 - Bailey, Borwein, Lopez de Prado & Zhu, "The Probability of Backtest
   Overfitting" (Journal of Computational Finance 2015).
-- Lo, "The Statistics of Sharpe Ratios" (Financial Analysts Journal 2002), for
-  serially correlated returns; see trialgate.autocorrelation.
+- Lo, "The Statistics of Sharpe Ratios" (Financial Analysts Journal 58(4),
+  2002), for serially correlated returns: eta(q), Eq. (20) p. 40, and the
+  GMM variance, Eq. (14) p. 39; see trialgate.autocorrelation.
 
 These statistics operate on measurement floats, not account money, so
 float arithmetic is intentional here (unlike a Decimal trading path).
@@ -130,12 +133,19 @@ def lo_annualized_sharpe(
     """Annualize with Lo's (2002) eta(q) instead of sqrt(q).
 
     SR(q) = eta(q) * SR, eta(q) = q / sqrt(q + 2 sum_{k=1}^{q-1} (q - k) rho_k),
-    q = ``periods_per_year``. Positive autocorrelation makes eta(q) < sqrt(q):
-    the sqrt(q) figure overstates the annual Sharpe of smoothed returns.
+    q = ``periods_per_year`` (Lo, Eq. (20) p. 40). Positive autocorrelation
+    makes eta(q) < sqrt(q): the sqrt(q) figure overstates the annual Sharpe of
+    smoothed returns.
+
+    SR here divides by the T - 1 standard deviation, like ``sharpe_ratio``, so
+    that ``annualized_sharpe`` equals ``iid_annualized_sharpe`` when every
+    rho_k is zero. Lo's Eqs. (3b)-(4) p. 37 divide by the 1/T one, which is
+    larger by sqrt(T / (T - 1)), a factor 1 + 1/(2T) to first order.
 
     ``max_lag`` is how many sample autocorrelations enter the sum. Lo's
-    formula uses all q - 1; pass ``max_lag=periods_per_year - 1`` for that,
-    which is the right call for monthly data (11 lags). For daily data, 251
+    estimator uses all q - 1 ("The General Case", p. 42); pass
+    ``max_lag=periods_per_year - 1`` for that, which is the right call for
+    monthly data (11 lags). For daily data, 251
     sample autocorrelations are mostly noise and that noise is weighted by up
     to q - 1, so the default truncates at the Andrews (1991) bandwidth of the
     series -- one or two lags on uncorrelated returns, dozens on a strongly
@@ -195,14 +205,20 @@ def deflated_sharpe_ratio(
     everything. ``effective_trials`` is the correlation-adjusted trial count N;
     a flattering N voids the gate.
 
+    The IID value is the DSR paper's Eq. (2) p. 8.
+
     ``autocorrelation`` decides what serial correlation in ``returns`` does.
     The PSR/DSR variance term assumes independent periods; positively
     autocorrelated returns make it too small and the DSR too high. In every
     mode but ``"ignore"`` the long-run variance of the Sharpe estimator is
-    estimated (Lo 2002, GMM case; trialgate.autocorrelation) and the statistic
-    recomputed on the equivalent number of independent observations:
+    estimated (Lo 2002, GMM case, Eq. (14) p. 39; trialgate.autocorrelation)
+    and the statistic recomputed on the equivalent number of independent
+    observations:
 
         z_adj = (SR - SR_0) * sqrt((T - 1) / ratio) / sqrt(Mertens term)
+
+    This adjustment is trialgate's extension of the DSR, not part of Bailey &
+    Lopez de Prado's method; see trialgate.autocorrelation.sharpe_variance_ratio.
 
     ``"report"`` (default) judges the IID value -- bit-for-bit what earlier
     releases returned -- and carries the adjusted one alongside for a gate to

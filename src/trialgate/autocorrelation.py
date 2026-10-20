@@ -7,13 +7,21 @@ flattering direction: the annualized Sharpe is overstated and the standard
 error understated, so the DSR rises for reasons that have nothing to do with
 skill.
 
-Sources:
-- Lo, "The Statistics of Sharpe Ratios" (Financial Analysts Journal 2002):
-  the time-aggregation factor eta(q) and the GMM (Newey-West) variance of the
-  Sharpe ratio under non-IID returns.
+Sources (page numbers are the journal's for Lo, the authors' preprints for
+Bailey & Lopez de Prado):
+- Lo, "The Statistics of Sharpe Ratios", Financial Analysts Journal 58(4),
+  2002, pp. 36-52: the time-aggregation factor eta(q), Eq. (20) p. 40, and
+  its AR(1) closed form, Eq. (22) p. 41; the GMM variance of the Sharpe ratio
+  under non-IID returns, Eq. (14) p. 39 with Appendix A Eqs. (A3) p. 46 and
+  (A7), (A8), (A11) p. 47. Lo estimates the long-run covariance with
+  Newey-West at a fixed truncation lag m, Eqs. (A12)-(A14) p. 47; this module
+  uses the prewhitened Andrews-Monahan estimator below instead.
 - Bailey & Lopez de Prado, "The Sharpe Ratio Efficient Frontier" (Journal of
-  Risk 2012) and "The Deflated Sharpe Ratio" (JPM 2014): the PSR/DSR
-  statistic whose variance term this module rescales.
+  Risk 2012; preprint of July 2012): the IID non-normal variance of the
+  Sharpe ratio, Eq. (8) p. 8, and the PSR, Eq. (11) p. 9. "The Deflated
+  Sharpe Ratio" (JPM 2014; preprint of July 31, 2014): the DSR, Eq. (2) p. 8.
+  Neither paper rescales that variance for serial correlation; doing so is
+  this package's extension (see sharpe_variance_ratio).
 - Andrews, "Heteroskedasticity and Autocorrelation Consistent Covariance
   Matrix Estimation" (Econometrica 1991): the Bartlett kernel's AR(1)
   plug-in bandwidth.
@@ -148,17 +156,29 @@ def sharpe_variance_ratio(values: Sequence[float]) -> float:
     """Long-run over IID variance of the Sharpe ratio estimator (Lo 2002, GMM case).
 
     The estimator SR = mu / sigma is a function of the moment vector
-    (r_t - mu, (r_t - mu)^2 - sigma^2). Its asymptotic variance is g' Omega g
-    with g = (1/sigma, -mu / (2 sigma^3)), the gradient of mu / sigma in
-    (mu, sigma^2), and Omega the moments' long-run covariance. That is the
-    long-run variance of the scalar influence series
+    (r_t - mu, (r_t - mu)^2 - sigma^2), Lo's Eq. (A8) p. 47. Its asymptotic
+    variance is g' Omega g, Lo's Eq. (14) p. 39 and (A11) p. 47, with
+    g = (1/sigma, -mu / (2 sigma^3)), the gradient of mu / sigma in
+    (mu, sigma^2), Eq. (A3) p. 46 with Rf = 0, and Omega the moments'
+    long-run covariance, Eq. (A7) p. 47. That is the long-run variance of the
+    scalar influence series
 
         psi_t = (r_t - mu) / sigma - mu / (2 sigma^3) * ((r_t - mu)^2 - sigma^2).
 
     With IID returns Omega is the lag-0 covariance alone and g' Omega g is
     exactly the Mertens term 1 - skew * SR + (kurt - 1) / 4 * SR^2 used by the
-    PSR/DSR; serial correlation only adds the lag terms. The ratio of the two
-    therefore rescales that term without touching its skew/kurtosis part.
+    PSR/DSR (Bailey & Lopez de Prado 2012, Eq. (8) p. 8, written there as
+    1 + SR^2 / 2 - skew * SR + (kurt - 3) / 4 * SR^2); serial correlation only
+    adds the lag terms. The ratio of the two therefore rescales that term
+    without touching its skew/kurtosis part.
+
+    Using the ratio inside the DSR is this package's extension, not a method
+    of either Bailey & Lopez de Prado paper: the DSR paper does not discuss
+    serial correlation, and the PSR paper says it does not "explicitly
+    address the case of serially-conditioned processes" (p. 4) and takes the
+    Mertens variance to hold for stationary ergodic returns on the strength
+    of Christie (2005) and Opdyke (2007) (pp. 4, 8). Lo's Eq. (14) carries
+    the lag covariances that the Mertens term drops.
     """
 
     count = len(values)
@@ -192,7 +212,7 @@ def diagnose(values: Sequence[float]) -> AutocorrelationDiagnostics:
 
 
 def eta(periods: int, autocorrelations: Sequence[float]) -> float:
-    """Lo (2002) time-aggregation factor: SR(q) = eta(q) * SR.
+    """Lo (2002) time-aggregation factor: SR(q) = eta(q) * SR, Eq. (20) p. 40.
 
     eta(q) = q / sqrt(q + 2 * sum_{k=1}^{q-1} (q - k) rho_k), with rho_k taken
     as zero beyond ``len(autocorrelations)``. With every rho_k zero this is
@@ -213,9 +233,13 @@ def eta(periods: int, autocorrelations: Sequence[float]) -> float:
 
 
 def ar1_eta(periods: int, rho: float) -> float:
-    """Lo (2002) closed form of eta(q) when rho_k = rho^k (an AR(1)).
+    """Lo (2002) closed form of eta(q) when rho_k = rho^k (an AR(1)), Eq. (22) p. 41.
 
+    Lo writes it sqrt(q) * [1 + 2 rho / (1 - rho) * (1 - (1 - rho^q) / (q (1 - rho)))]^(-1/2);
+    this is the same expression through
     sum_{k=1}^{q-1} (q - k) rho^k = rho / (1 - rho) * (q - (1 - rho^q) / (1 - rho)).
+    Table 2 (p. 41) tabulates it; tests/test_lo_2002_crosscheck.py reproduces
+    every cell.
     """
 
     return periods / math.sqrt(
