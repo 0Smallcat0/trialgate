@@ -431,3 +431,45 @@ def test_iid_variance_ratio_is_near_one_and_lag_zero_is_the_mertens_term() -> No
         1 - skew * sharpe + (kurtosis - 1) / 4 * sharpe**2, rel=1e-10
     )
     assert sharpe_variance_ratio(values.tolist()) == pytest.approx(1.0, abs=0.08)
+
+
+def test_warning_survives_autocorrelations_with_no_valid_annualization(tmp_path: Path) -> None:
+    """A short, strongly negative series can make Lo's truncated sum impossible.
+
+    lo_annualized_sharpe() refuses such a series; the gate report must still
+    come back, with the warning and without the annualized figure.
+    """
+
+    candidate = [0.28, -1.89, -0.02, -1.15, -0.18, -0.42, 0.07, -0.78]
+    with pytest.raises(ValidationInputError, match="non-positive variance"):
+        lo_annualized_sharpe(candidate, periods_per_year=12)
+    registry = tmp_path / "registry.jsonl"
+    other = [0.5, -0.3, 0.2, 0.1, -0.4, 0.3, 0.0, -0.1]
+    for config, returns in enumerate((candidate, other)):
+        append_trial(
+            registry,
+            recorded_at=_NOW,
+            code_version="test",
+            strategy_id="short",
+            parameters={"config": str(config)},
+            universe=("SYNTH",),
+            data_start=_START,
+            data_end=_END,
+            cost_assumptions={"round_trip_bps": "10"},
+            metrics={},
+            operator_note=f"config {config}",
+            period_returns=returns,
+        )
+
+    report = evaluate_registry(
+        registry,
+        candidate_trial_id=1,
+        periods_per_year=12,
+        effective_trials=2,
+        block_count=2,
+        min_observations=1,
+    )
+    dsr = next(check for check in report.checks if check.gate.startswith("DSR"))
+
+    assert "WARNING returns are serially correlated" in dsr.detail
+    assert "eta(q)" not in dsr.detail

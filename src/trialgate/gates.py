@@ -37,6 +37,7 @@ from trialgate.risk import assess_stop_line
 from trialgate.validation import (
     AutocorrelationMode,
     DeflatedSharpeResult,
+    ValidationInputError,
     deflated_sharpe_ratio,
     lo_annualized_sharpe,
     probability_of_backtest_overfitting,
@@ -270,13 +271,23 @@ def _autocorrelation_detail(
             f"autocorrelation-adjusted on {effective} ({test}); "
             f"IID DSR {dsr.iid_deflated_sharpe_ratio:g}"
         )
-    annual = lo_annualized_sharpe(returns, periods_per_year=periods_per_year)
     verdict = "PASS" if dsr.adjusted_deflated_sharpe_ratio >= min_dsr else "FAIL"
+    try:
+        annual = lo_annualized_sharpe(returns, periods_per_year=periods_per_year)
+    except ValidationInputError:
+        # The truncated autocorrelations can sum to an impossible q-period
+        # variance on a short, strongly negative series; the warning above
+        # stands without the annualized figure rather than failing the report.
+        sharpe = ""
+    else:
+        sharpe = (
+            f"; annualized Sharpe {annual.iid_annualized_sharpe:.2f} by "
+            f"sqrt({periods_per_year}) is {annual.annualized_sharpe:.2f} by Lo's eta(q)"
+        )
     return (
         f"WARNING returns are serially correlated ({test}), which this DSR assumes "
         f"away: adjusted for it, DSR is {dsr.adjusted_deflated_sharpe_ratio:g} on "
-        f"{effective} (would {verdict}); annualized Sharpe {annual.iid_annualized_sharpe:.2f} "
-        f"by sqrt({periods_per_year}) is {annual.annualized_sharpe:.2f} by Lo's eta(q). "
+        f"{effective} (would {verdict}){sharpe}. "
         'Pass autocorrelation="adjust" to judge the adjusted value'
     )
 
