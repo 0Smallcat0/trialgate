@@ -311,3 +311,22 @@ def test_a_column_constant_after_its_first_row_scores_zero_not_a_rounding_residu
     pbo = probability_of_backtest_overfitting(matrix, block_count=8).pbo
 
     assert pbo == pytest.approx(_logit_pbo(matrix, 8))
+
+
+@pytest.mark.parametrize("copies", [2, 3])
+def test_duplicated_trials_do_not_lower_pbo(copies: int) -> None:
+    """A parameter that changes nothing duplicates every column of the grid.
+
+    The duplicates tie out of sample, and ranking a tie in the chosen trial's
+    favour lifted it past the median: with 7 distinct trials, doubling each
+    one dropped PBO on pure noise from about 0.6 to about 0.45. Ranking ties
+    against the chosen trial makes PBO the same as for the distinct trials.
+    """
+
+    rng = random.Random(11)
+    matrix = [[rng.gauss(0.0, 0.01) for _ in range(7)] for _ in range(320)]
+    duplicated = [[value for value in row for _ in range(copies)] for row in matrix]
+
+    baseline = probability_of_backtest_overfitting(matrix, block_count=8).pbo
+
+    assert probability_of_backtest_overfitting(duplicated, block_count=8).pbo == baseline

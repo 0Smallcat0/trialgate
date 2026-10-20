@@ -26,6 +26,18 @@
   The inversion squares the normal quantile, so a target of 0.05 reported the
   sample size for 0.95, and 1.0 failed inside `statistics`.
 
+- **A column constant over a split but not equal to its first row** (an entry
+  cost on bar one, then a flat yield) still left a rounding residue after the
+  shift above and scored a Sharpe in the millions: PBO 0.0 where the literal
+  definition gives 0.37. A split's spread inside the summation error bound is
+  now treated as zero.
+- **CSCV ranks out-of-sample ties against the chosen trial.** Ties were ranked
+  in its favour, so duplicated columns (a grid parameter that changes nothing)
+  lifted it past the median: on pure noise with 7 distinct trials, doubling
+  each dropped PBO from about 0.6 to about 0.45. PBO now equals that of the
+  distinct trials. The demo's 450-configuration grid has such ties; its PBO
+  moves from 0.0417249 to 0.0418803.
+
 ### Tests
 
 - Cross-checks against the worked example in Bailey & López de Prado (2014):

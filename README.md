@@ -31,7 +31,7 @@ Registered trials (the honest N): 450
 OK    450 trials, sealed against edits: 1-449
 
 PASS  data floor (gate 2): 2000 >= 1000
-PASS  PBO (gate 3): 0.0417249 <= 0.05
+PASS  PBO (gate 3): 0.0418803 <= 0.05
 FAIL  DSR (gate 4): 0.603118 >= 0.95
 PASS  stop-line survivability (gate 7): 1.10249e-15 <= 0.1
 PASS  declared costs (gate 8): 450 >= 450

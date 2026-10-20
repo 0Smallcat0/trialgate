@@ -309,7 +309,10 @@ def probability_of_backtest_overfitting(
         test_scores = _split_sharpes(block_sums, block_squares, shifts, test_blocks, split_size)
         best_in_sample = max(range(strategies), key=lambda column: train_scores[column])
         best_out_of_sample = test_scores[best_in_sample]
-        rank = sum(1 for score in test_scores if score <= best_out_of_sample)
+        # Ties rank against the chosen trial: duplicated columns (a parameter
+        # that changes nothing) would otherwise lift it past the median and
+        # lower PBO; this way PBO equals that of the distinct trials.
+        rank = 1 + sum(1 for score in test_scores if score < best_out_of_sample)
         if rank / (strategies + 1) <= 0.5:
             overfit_count += 1
 

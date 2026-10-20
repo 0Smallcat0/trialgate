@@ -52,7 +52,7 @@ def _reference_pbo(performance_matrix: list[list[float]], *, block_count: int) -
         train_scores = [column_sharpe(train_rows, column) for column in range(strategies)]
         test_scores = [column_sharpe(test_rows, column) for column in range(strategies)]
         best = max(range(strategies), key=lambda column: train_scores[column])
-        rank = sum(1 for score in test_scores if score <= test_scores[best])
+        rank = 1 + sum(1 for score in test_scores if score < test_scores[best])
         if rank / (strategies + 1) <= 0.5:
             overfit_count += 1
     return overfit_count / len(combos)
