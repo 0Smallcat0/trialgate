@@ -89,6 +89,12 @@ def import_freqtrade_results(
     from the run's own trades. A run whose epochs never traded leaves it
     empty, which gate 8 then reports.
 
+    ``period_costs`` (gate 9) is the fee each day's closed trades paid, over
+    the same equity: every fill's amount times its price times that side's
+    fee, booked on the day the trade closes, as its profit is. Funding fees
+    are not execution and are left in the returns. An epoch whose results
+    carry a trade count but no trade list registers no costs.
+
     Passing ``holdout`` checks every epoch against the gate-5 lock before
     anything is written, so a hyperopt that reached into the locked period is
     refused whole rather than half-imported.
@@ -174,6 +180,8 @@ class OptunaRecorder:
     The return series comes from ``trial.user_attrs["period_returns"]`` by
     default: call ``trial.set_user_attr("period_returns", list(returns))`` in
     the objective. Pass ``returns=`` to read it from somewhere else instead.
+    Gate 9's cost series comes the same way from ``"period_costs"``, or
+    ``costs=``: what trading cost in each period, as a fraction of equity.
 
     Everything the trial does not know -- the strategy, the data range, the
     universe, the costs -- is fixed for the study and given here once.
@@ -197,6 +205,7 @@ class OptunaRecorder:
         code_version: str = "unrecorded",
         returns: ReturnsGetter | None = None,
         holdout: str | Path | None = None,
+        costs: ReturnsGetter | None = None,
     ) -> None:
         self.registry = Path(registry)
         self.strategy_id = strategy_id
@@ -206,6 +215,7 @@ class OptunaRecorder:
         self.cost_assumptions = dict(cost_assumptions)
         self.code_version = code_version
         self.returns = returns or _user_attr_returns
+        self.costs = costs or _user_attr_costs
         self.holdout = holdout
         if holdout is not None:
             # Fail before the first trial runs, not after the hundredth.
@@ -241,6 +251,7 @@ class OptunaRecorder:
         if values:
             metrics["objective"] = ",".join(f"{value:.10g}" for value in values)
         recorded = trial.datetime_complete
+        returns = self.returns(trial)
         return append_trial(
             self.registry,
             recorded_at=(
@@ -257,7 +268,10 @@ class OptunaRecorder:
             cost_assumptions=self.cost_assumptions,
             metrics=metrics,
             operator_note=f"optuna study {study_name} trial {trial.number} ({state.lower()})",
-            period_returns=self.returns(trial),
+            period_returns=returns,
+            # A pruned trial can carry costs for the periods it ran and no
+            # full return series; the costs mean nothing without the returns.
+            period_costs=None if returns is None else self.costs(trial),
             holdout=self.holdout,
         )
 
@@ -274,6 +288,7 @@ def import_optuna_study(
     code_version: str = "unrecorded",
     returns: ReturnsGetter | None = None,
     holdout: str | Path | None = None,
+    costs: ReturnsGetter | None = None,
 ) -> ImportReport:
     """Register a study that already ran, e.g. one loaded from its storage.
 
@@ -291,6 +306,7 @@ def import_optuna_study(
         code_version=code_version,
         returns=returns,
         holdout=holdout,
+        costs=costs,
     )
     appended: list[TrialRecord] = []
     skipped = 0
@@ -386,7 +402,10 @@ def _freqtrade_trial(
     except (KeyError, TypeError, ValueError) as exc:
         msg = f"{where}: results_metrics is missing a field trialgate needs ({exc})"
         raise TrialRegistryError(msg) from exc
-    returns = _daily_returns(metrics.get("daily_profit") or [], start, end, balance, where)
+    daily_fees = _daily_fees(metrics, start, end, where)
+    returns, costs = _daily_returns(
+        metrics.get("daily_profit") or [], start, end, balance, where, daily_fees
+    )
     run_ts = metrics.get("backtest_run_start_ts")
     ran_at = datetime.fromtimestamp(float(run_ts), tz=UTC) if _is_number(run_ts) else None
     reported = {
@@ -411,12 +430,74 @@ def _freqtrade_trial(
         "metrics": {key: value for key, value in reported.items() if value != ""},
         "operator_note": f"freqtrade hyperopt {source.removeprefix('freqtrade:')}",
         "period_returns": returns,
+        "period_costs": costs,
     }
 
 
+def _daily_fees(
+    metrics: Mapping[str, Any], start: datetime, end: datetime, where: str
+) -> list[float] | None:
+    """Fee paid per backtest day, booked on each trade's close day; None if unknown."""
+
+    first = start.date()
+    days = (end.date() - first).days + 1
+    fees = [0.0] * days
+    trades = metrics.get("trades")
+    if not isinstance(trades, list):
+        traded = metrics.get("total_trades")
+        return None if not _is_number(traded) or traded else fees
+    for trade in trades:
+        if not isinstance(trade, Mapping):
+            continue
+        paid = _trade_fee(trade)
+        if paid is None:
+            return None
+        try:
+            closed = _freqtrade_time(trade["close_date"]).date()
+        except (KeyError, ValueError) as exc:
+            msg = f"{where}: a trade has no readable close_date ({exc})"
+            raise TrialRegistryError(msg) from exc
+        offset = (closed - first).days
+        if not 0 <= offset < days:
+            msg = f"{where}: a trade closed on {closed}, outside the backtest {first}..{end.date()}"
+            raise TrialRegistryError(msg)
+        fees[offset] += paid
+    return fees
+
+
+def _trade_fee(trade: Mapping[str, Any]) -> float | None:
+    """What one trade paid in fees: each fill's amount x price x that side's fee."""
+
+    fee_open, fee_close = trade.get("fee_open"), trade.get("fee_close")
+    if not (_is_number(fee_open) and _is_number(fee_close)):
+        return None
+    orders = trade.get("orders")
+    if isinstance(orders, list) and orders:
+        paid = 0.0
+        for order in orders:
+            if not isinstance(order, Mapping):
+                return None
+            amount, price = order.get("amount"), order.get("safe_price")
+            if not (_is_number(amount) and _is_number(price)):
+                return None
+            side_fee = fee_open if order.get("ft_is_entry") else fee_close
+            paid += abs(float(amount)) * float(price) * float(side_fee)
+        return paid
+    amount, opened, closed = trade.get("amount"), trade.get("open_rate"), trade.get("close_rate")
+    if not (_is_number(amount) and _is_number(opened) and _is_number(closed)):
+        return None
+    size = abs(float(amount))
+    return size * float(opened) * float(fee_open) + size * float(closed) * float(fee_close)
+
+
 def _daily_returns(
-    daily_profit: Sequence[Any], start: datetime, end: datetime, balance: float, where: str
-) -> list[float]:
+    daily_profit: Sequence[Any],
+    start: datetime,
+    end: datetime,
+    balance: float,
+    where: str,
+    fees: list[float] | None = None,
+) -> tuple[list[float], list[float] | None]:
     if balance <= 0.0:
         msg = f"{where}: starting_balance must be positive, got {balance}"
         raise TrialRegistryError(msg)
@@ -440,14 +521,17 @@ def _daily_returns(
         if math.isfinite(value):
             profit[offset] += value
     returns: list[float] = []
+    costs: list[float] = []
     equity = balance
     for index, value in enumerate(profit):
         if equity <= 0.0:
             msg = f"{where}: the account is at or below zero by {first + timedelta(days=index)}"
             raise TrialRegistryError(msg)
         returns.append(value / equity)
+        if fees is not None:
+            costs.append(fees[index] / equity)
         equity += value
-    return returns
+    return returns, (costs if fees is not None else None)
 
 
 def _freqtrade_time(raw: object) -> datetime:
@@ -472,6 +556,11 @@ def _registered_sources(registry: Path) -> set[str]:
 
 def _user_attr_returns(trial: Any) -> Sequence[float] | None:
     raw = getattr(trial, "user_attrs", {}).get("period_returns")
+    return None if raw is None else [float(value) for value in raw]
+
+
+def _user_attr_costs(trial: Any) -> Sequence[float] | None:
+    raw = getattr(trial, "user_attrs", {}).get("period_costs")
     return None if raw is None else [float(value) for value in raw]
 
 

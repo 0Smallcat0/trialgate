@@ -2,9 +2,10 @@
 
 A strategy earns belief by surviving verification, not by looking good
 in-sample. This package provides the mechanical parts of a qualification
-standard: a tamper-evident append-only trial registry, CSCV/PBO and Deflated
-Sharpe Ratio statistics, a single-use holdout lock, a stop-line survivability
-check, and threshold gates that combine them into a verdict.
+standard: a tamper-evident append-only trial registry filled straight from
+freqtrade or Optuna, CSCV/PBO and Deflated Sharpe Ratio statistics, a
+single-use holdout lock, live deviation bands, a stop-line survivability
+check, a cost stress, and threshold gates that combine them into a verdict.
 """
 
 from trialgate.autocorrelation import AutocorrelationDiagnostics
@@ -15,6 +16,7 @@ from trialgate.capture import (
     import_optuna_study,
 )
 from trialgate.gates import (
+    DEFAULT_COST_MULTIPLIER,
     DEFAULT_MAX_PBO,
     DEFAULT_MAX_STOP_BREACH,
     DEFAULT_MIN_DSR,
@@ -49,6 +51,7 @@ from trialgate.registry import (
     TrialRegistryError,
     append_trial,
     config_hash_for,
+    load_period_costs,
     load_trials,
     performance_matrix,
     trial_count,
@@ -75,9 +78,10 @@ from trialgate.validation import (
     sharpe_ratio,
 )
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 __all__ = [
+    "DEFAULT_COST_MULTIPLIER",
     "DEFAULT_MAX_PBO",
     "DEFAULT_MAX_STOP_BREACH",
     "DEFAULT_MIN_DSR",
@@ -118,6 +122,7 @@ __all__ = [
     "initialize_holdout",
     "load_holdout",
     "load_live_bands",
+    "load_period_costs",
     "load_trials",
     "lo_annualized_sharpe",
     "lock_live_bands",

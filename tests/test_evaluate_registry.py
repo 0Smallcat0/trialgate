@@ -72,6 +72,7 @@ def test_a_noise_sweep_is_not_qualified(tmp_path: Path) -> None:
         "PBO (gate 3)",
         "DSR (gate 4)",
         "declared costs (gate 8)",
+        "cost stress (gate 9)",
     ]
     assert "NOT QUALIFIED" in report.summary()
 

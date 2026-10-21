@@ -17,6 +17,7 @@ from trialgate import (
     import_freqtrade_results,
     import_optuna_study,
     initialize_holdout,
+    load_period_costs,
     load_trials,
     performance_matrix,
 )
@@ -184,8 +185,13 @@ def test_a_real_freqtrade_hyperopt_log_goes_through_every_gate(tmp_path: Path) -
         block_count=4,
         min_observations=10,
     )
-    assert [check.gate for check in gates.checks][-1] == "declared costs (gate 8)"
-    assert gates.checks[-1].passed
+    assert [check.gate for check in gates.checks][-2:] == [
+        "declared costs (gate 8)",
+        "cost stress (gate 9)",
+    ]
+    assert gates.checks[-2].passed
+    # Its fees were recorded trade by trade, so gate 9 can price them again.
+    assert "its mean return reaches zero at" in gates.checks[-1].detail
 
     # Each epoch's booked profit, as freqtrade summed it, is what the series compounds to.
     epochs = [
@@ -200,6 +206,79 @@ def test_a_real_freqtrade_hyperopt_log_goes_through_every_gate(tmp_path: Path) -
             final *= 1.0 + value
         metrics = epochs[trial.trial_id - 1]["results_metrics"]
         assert final - 1.0 == pytest.approx(metrics["profit_total"], abs=1e-9)
+
+
+def test_the_fees_recorded_are_the_fees_freqtrade_charged(tmp_path: Path) -> None:
+    """Every trade's profit plus its recorded fee is its price move, to the cent."""
+
+    registry = tmp_path / "registry.jsonl"
+    import_freqtrade_results(FIXTURES / "freqtrade", registry)
+    epochs = [
+        json.loads(line)
+        for line in next((FIXTURES / "freqtrade").glob("*.fthypt"))
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+
+    checked = 0
+    for trial in load_trials(registry):
+        metrics = epochs[trial.trial_id - 1]["results_metrics"]
+        paid = 0.0
+        for trade in metrics["trades"]:
+            fee = sum(
+                order["amount"]
+                * order["safe_price"]
+                * (trade["fee_open"] if order["ft_is_entry"] else trade["fee_close"])
+                for order in trade["orders"]
+            )
+            moved = trade["amount"] * (trade["close_rate"] - trade["open_rate"])
+            assert trade["profit_abs"] + fee == pytest.approx(
+                -moved if trade["is_short"] else moved, abs=1e-6
+            )
+            paid += fee
+            checked += 1
+
+        # The cost series is those fees as a fraction of the equity each day began with.
+        costs = load_period_costs(registry, trial.trial_id)
+        assert costs is not None
+        returns = [row[trial.trial_id - 1] for row in performance_matrix(registry)]
+        equity = float(metrics["starting_balance"])
+        recovered = 0.0
+        for value, cost in zip(returns, costs, strict=True):
+            recovered += cost * equity
+            equity *= 1.0 + value
+        assert recovered == pytest.approx(paid, abs=1e-9)
+    assert checked > 30
+
+
+def test_a_trade_without_fill_prices_leaves_the_costs_unknown(tmp_path: Path) -> None:
+    results = _write_fthypt(
+        tmp_path / "run.fthypt",
+        [
+            _epoch(1, [("2024-01-03", 5.0)], trades=[_TRADE]),
+            _epoch(
+                2,
+                [("2024-01-03", 5.0)],
+                trades=[
+                    {
+                        **_TRADE,
+                        "amount": 2.0,
+                        "open_rate": 100.0,
+                        "close_rate": 103.0,
+                        "close_date": "2024-01-03 08:00:00+00:00",
+                    }
+                ],
+            ),
+        ],
+    )
+    registry = tmp_path / "registry.jsonl"
+    import_freqtrade_results(results, registry)
+
+    assert load_period_costs(registry, 1) is None
+    costs = load_period_costs(registry, 2)
+    assert costs is not None
+    assert costs[2] == pytest.approx((2.0 * 100.0 * 0.001 + 2.0 * 103.0 * 0.001) / 1000.0)
+    assert sum(1 for cost in costs if cost) == 1
 
 
 # --- Optuna -----------------------------------------------------------------
@@ -270,6 +349,22 @@ def test_the_callback_registers_complete_and_pruned_trials_but_not_failed(
     assert trials[1].metrics["state"] == "pruned"
     assert trials[2].parameters == {"window": "0.25"}
     assert trials[2].recorded_at == finished
+
+
+def test_the_callback_records_the_costs_a_trial_reports(tmp_path: Path) -> None:
+    registry = tmp_path / "registry.jsonl"
+    recorder = _recorder(registry)
+    study = _Study("s3", [])
+    charged = {"period_returns": [0.01, -0.02, 0.0], "period_costs": [0.0005, 0.0005, 0.0]}
+    for trial in (
+        _Trial(0, {"window": 10}, _State.COMPLETE, [1.2], charged),
+        # Pruned partway: it knows what it paid so far but has no full series.
+        _Trial(1, {"window": 20}, _State.PRUNED, None, {"period_costs": [0.0005]}),
+    ):
+        recorder(study, trial)
+
+    assert load_period_costs(registry, 1) == [0.0005, 0.0005, 0.0]
+    assert load_period_costs(registry, 2) is None
 
 
 def test_backfilling_a_study_skips_what_the_callback_already_registered(tmp_path: Path) -> None:

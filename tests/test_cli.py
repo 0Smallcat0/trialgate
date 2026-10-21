@@ -37,7 +37,18 @@ def test_hyperopt_to_verdict_to_live_bands(
     report = capsys.readouterr().out
     assert verdict == 1  # eight epochs of a sample strategy over six months are not evidence
     assert "data floor (gate 2)" in report
+    assert "cost stress (gate 9)" in report
+    assert "at 2x the costs" in report
     assert report.rstrip().endswith("NOT QUALIFIED")
+
+    judge = ["evaluate", registry, "--trial", str(pick), "--periods-per-year", "365"]
+    main([*judge, "--effective-trials", "8", "--cost-multiplier", "3"])
+    assert "at 3x the costs" in capsys.readouterr().out
+    main([*judge, "--effective-trials", "8", "--no-cost-stress"])
+    assert "gate 9" not in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        main([*judge, "--effective-trials", "8", "--no-cost-stress", "--cost-multiplier", "3"])
+    capsys.readouterr()
 
     bands = str(tmp_path / "live_bands.json")
     lock_args = ["live-lock", registry, "--trial", str(pick), "--horizon", "30", "--out", bands]

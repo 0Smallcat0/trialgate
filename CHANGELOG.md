@@ -1,9 +1,45 @@
 # Changelog
 
-## Unreleased
+## 0.6.0
+
+The release that covers the whole way from an optimizer run to money at risk.
+Up to 0.5 the gates judged whatever trials someone remembered to register, and
+the step after the backtest was a sentence ("paper trade for three months").
+Now the trial count comes from the optimizer itself: one command registers
+every epoch of a freqtrade hyperopt, and an Optuna callback registers every
+trial as the study runs. Gate 6 is a computation: bands locked before the
+first live day, with a STOP that exits 1. A new gate 9 asks whether the edge
+survives paying for execution twice, since one basis point is enough to pass
+gate 8. The statistics underneath were audited against their papers, and five
+ways they could pass a strategy they should have rejected are fixed. The DSR
+now reports when serially correlated returns make it too generous. The data
+floor counts the days a strategy actually had a return, not the days it sat
+in cash. On a real 20-epoch freqtrade run, the epoch freqtrade picked had won
+5 trades out of 5 and reported a Sharpe of 39.7. It is now rejected by four
+gates, each with its reason.
 
 ### Added
 
+- **Gate 9, cost stress**, on by default in `evaluate_registry()`. The
+  candidate's registered per-period costs are charged again (`cost_multiplier`,
+  2× in total by default) and the DSR of what is left must clear `min_dsr`,
+  deflated by the same trial spread as gate 4. The detail gives the multiple of
+  those costs at which the mean return reaches zero. Backtests charge the fee
+  their author typed and leave out spread and slippage (freqtrade's backtester
+  fills every order at the requested price), and gate 8 is satisfied by any
+  cost above zero. In the tests, a candidate netting 0.1% a day after 0.1% of
+  costs passes gate 4 at a DSR of 0.98 and fails gate 9 at 0.12.
+  - `append_trial(..., period_costs=[...])` stores what execution cost in each
+    period, as a fraction of equity and already deducted from
+    `period_returns`, hashed into the chained record like the returns.
+    `load_period_costs()` reads it back and raises on an edited file. Costs
+    must be finite, non-negative and line up with the returns.
+  - `import-freqtrade` records each trade's fee: every fill's amount × price ×
+    that side's fee, booked on the day the trade closed. On the real fixture,
+    each trade's `profit_abs` plus that fee equals its price move to within
+    5e-9, for all 37 trades. The Optuna callback reads
+    `user_attrs["period_costs"]`.
+  - `trialgate evaluate --cost-multiplier 3` or `--no-cost-stress`.
 - **Trial capture from the optimizer** (`trialgate.capture`). The trial count
   no longer depends on remembering to register:
   - `import_freqtrade_results()` / `trialgate import-freqtrade` registers every
@@ -54,6 +90,14 @@
 
 ### Changed
 
+- **Breaking: a candidate registered without `period_costs` fails gate 9.**
+  Its edge after a higher cost is unknown, and unknown is not cheap. Registries
+  filled by `import-freqtrade` from this release on carry the costs. For older
+  registries, re-import or re-register with `period_costs=`, or pass
+  `cost_multiplier=None` (`--no-cost-stress`) and know what the verdict leaves
+  out. The demo registers its costs; its best configuration fails gate 9 too
+  (DSR 0.508 at 2×) and its mean return would reach zero only at 19.8× its
+  costs. Here the edge was never there, so the costs are not the reason.
 - **Gate 2 counts periods with a return, not the length of the series.** A
   period that returned exactly zero (flat, in cash) is not evidence, so a
   strategy in the market on 39 of 2000 days now has 39 observations. This
@@ -96,8 +140,22 @@
   distinct trials. The demo's 450-configuration grid has such ties; its PBO
   moves from 0.0417249 to 0.0418803.
 
+### Docs
+
+- The README's "What it will not do" now names two checks left out on
+  purpose. Look-ahead is a bug for the engine to find (freqtrade ships
+  `lookahead-analysis`); gate 6 catches what it does live. A cap on how much
+  of the profit came from a few days measures volatility, not luck. On
+  simulated strategies with a real edge (annual Sharpe 1.0, 1,000 days), the
+  best five days are a median 28% of the profit, and removing the best 21
+  erases it.
+
 ### Tests
 
+- Gate 9: pass and fail around the same edge, the breakeven multiple against
+  its arithmetic, missing and zero costs, the skip, monotonicity in the
+  multiplier, refused multipliers, cost storage and tampering, and the
+  freqtrade fee identity on every trade of the real fixture.
 - Autocorrelation: the default DSR pinned bit for bit to the previous release
   on IID data; the adjusted Sharpe standard error against Monte Carlo and the
   AR(1) asymptotic variance for φ from −0.5 to 0.8; DSR calibration on

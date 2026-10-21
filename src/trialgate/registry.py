@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -73,6 +74,7 @@ class TrialRecord:
     entry_hash: str | None = None
     returns_sha256: str | None = None
     returns_count: int | None = None
+    costs_sha256: str | None = None
 
     def to_json_dict(self) -> dict[str, object]:
         row: dict[str, object] = {
@@ -94,6 +96,8 @@ class TrialRecord:
         if self.returns_sha256 is not None:
             row["returns_sha256"] = self.returns_sha256
             row["returns_count"] = self.returns_count
+        if self.costs_sha256 is not None:
+            row["costs_sha256"] = self.costs_sha256
         return row
 
 
@@ -205,6 +209,7 @@ def append_trial(
     metrics: dict[str, str],
     operator_note: str,
     period_returns: Sequence[float] | None = None,
+    period_costs: Sequence[float] | None = None,
     config_hash: str | None = None,
     holdout: str | Path | None = None,
 ) -> TrialRecord:
@@ -216,6 +221,12 @@ def append_trial(
     as tamper-evident as the record itself, and ``performance_matrix()`` can
     later assemble the CSCV input from the registry instead of from whatever
     columns the operator feels like handing over.
+
+    Pass ``period_costs`` — what execution cost in each of those periods, as a
+    fraction of the equity the return is measured on, already deducted from
+    ``period_returns`` — to make the trial usable by gate 9, which charges the
+    costs again and asks whether the edge survives. It is stored and hashed
+    the same way, and must line up with ``period_returns`` period for period.
 
     Pass ``holdout`` — the path to the lock file — to enforce gate 5 here, at
     the only place that sees every run. Registering a trial whose ``data_end``
@@ -242,6 +253,17 @@ def append_trial(
     if period_returns is not None and len(period_returns) < 2:
         msg = "period_returns must contain at least 2 observations"
         raise TrialRegistryError(msg)
+    if period_costs is not None:
+        if period_returns is None or len(period_costs) != len(period_returns):
+            msg = (
+                "period_costs must line up with period_returns, one cost per period; "
+                f"got {len(period_costs)} costs for "
+                f"{'no' if period_returns is None else len(period_returns)} returns"
+            )
+            raise TrialRegistryError(msg)
+        if any(not math.isfinite(cost) or cost < 0.0 for cost in period_costs):
+            msg = "period_costs must be finite and not negative: a cost is what was paid"
+            raise TrialRegistryError(msg)
     if holdout is not None:
         require_data_allowed(holdout, data_end=data_end)
 
@@ -252,6 +274,7 @@ def append_trial(
     returns_text = (
         None if period_returns is None else json.dumps([float(v) for v in period_returns])
     )
+    costs_text = None if period_costs is None else json.dumps([float(v) for v in period_costs])
     record = TrialRecord(
         trial_id=trial_id,
         recorded_at=recorded_at,
@@ -268,11 +291,16 @@ def append_trial(
         prev_hash=head,
         returns_sha256=None if returns_text is None else _sha256(returns_text),
         returns_count=None if period_returns is None else len(period_returns),
+        costs_sha256=None if costs_text is None else _sha256(costs_text),
     )
     if returns_text is not None:
         returns_path = _returns_path(registry_path, trial_id)
         returns_path.parent.mkdir(parents=True, exist_ok=True)
         returns_path.write_text(returns_text, encoding="utf-8")
+    if costs_text is not None:
+        costs_path = _costs_path(registry_path, trial_id)
+        costs_path.parent.mkdir(parents=True, exist_ok=True)
+        costs_path.write_text(costs_text, encoding="utf-8")
     line = json.dumps(record.to_json_dict(), sort_keys=True)
     with registry_path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
@@ -339,8 +367,41 @@ def performance_matrix(
     return [[column[period] for column in columns] for period in range(len(columns[0]))]
 
 
+def load_period_costs(path: str | Path, trial_id: int) -> list[float] | None:
+    """The per-period costs registered with a trial, or None if none were.
+
+    Checked against the SHA-256 in the trial's chained record, like its returns.
+    """
+
+    registry_path = Path(path)
+    for trial in load_trials(registry_path):
+        if trial.trial_id != trial_id:
+            continue
+        if trial.costs_sha256 is None:
+            return None
+        costs_path = _costs_path(registry_path, trial_id)
+        if not costs_path.exists():
+            msg = f"trial {trial_id} records stored costs, but {costs_path} is missing"
+            raise TrialRegistryError(msg)
+        text = costs_path.read_text(encoding="utf-8")
+        if _sha256(text) != trial.costs_sha256:
+            msg = (
+                f"{costs_path} does not match the SHA-256 recorded for trial {trial_id}; "
+                "the cost series has been edited since it was registered, so every gate "
+                "verdict derived from it is void"
+            )
+            raise RegistryTamperError(msg)
+        return [float(value) for value in json.loads(text)]
+    msg = f"trial {trial_id} is not registered in {registry_path}"
+    raise TrialRegistryError(msg)
+
+
 def _returns_path(registry_path: Path, trial_id: int) -> Path:
     return registry_path.parent / f"{registry_path.name}.returns" / f"{trial_id}.json"
+
+
+def _costs_path(registry_path: Path, trial_id: int) -> Path:
+    return registry_path.parent / f"{registry_path.name}.costs" / f"{trial_id}.json"
 
 
 def _load_returns(registry_path: Path, trial: TrialRecord) -> list[float]:
@@ -406,6 +467,7 @@ def _record_from_row(row: object, path: Path, line_number: int) -> TrialRecord:
         raise TrialRegistryError(msg)
     prev_hash_raw = row.get("prev_hash")
     returns_hash_raw = row.get("returns_sha256")
+    costs_hash_raw = row.get("costs_sha256")
     try:
         return TrialRecord(
             trial_id=int(row["trial_id"]),
@@ -423,6 +485,7 @@ def _record_from_row(row: object, path: Path, line_number: int) -> TrialRecord:
             prev_hash=str(prev_hash_raw) if prev_hash_raw is not None else None,
             returns_sha256=None if returns_hash_raw is None else str(returns_hash_raw),
             returns_count=None if returns_hash_raw is None else int(row["returns_count"]),
+            costs_sha256=None if costs_hash_raw is None else str(costs_hash_raw),
         )
     except (KeyError, TypeError, ValueError) as exc:
         msg = f"{path}:{line_number} is not a valid trial record: {exc}"

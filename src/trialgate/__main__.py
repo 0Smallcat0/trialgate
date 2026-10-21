@@ -75,6 +75,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     evaluate.add_argument(
         "--autocorrelation", choices=("report", "adjust", "ignore"), default="report"
     )
+    stress = evaluate.add_mutually_exclusive_group()
+    stress.add_argument(
+        "--cost-multiplier",
+        type=float,
+        default=2.0,
+        help="gate 9 charges the recorded costs this many times over (default 2)",
+    )
+    stress.add_argument(
+        "--no-cost-stress",
+        action="store_true",
+        help="skip gate 9, for a registry whose trials carry no period costs",
+    )
 
     lock = subcommands.add_parser("live-lock", help="gate 6: lock the live bands before going live")
     lock.add_argument("registry")
@@ -146,6 +158,7 @@ def _evaluate(args: argparse.Namespace) -> int:
         strategy_id=args.strategy,
         stop_loss_fraction=args.stop_loss,
         autocorrelation=args.autocorrelation,
+        cost_multiplier=None if args.no_cost_stress else args.cost_multiplier,
     )
     print(report.summary())
     return 0 if report.passed else 1

@@ -68,17 +68,18 @@ def _strategy_returns(
     exit_lookback: int,
     vol_window: int,
     vol_threshold: float,
-) -> list[float]:
+) -> tuple[list[float], list[float]]:
     """Trend-follow with a volatility filter: four knobs, no edge to find.
 
     Returns are net of execution: each side of a round trip is charged when the
     position changes, so what reaches the registry is what an account would
-    have kept.
+    have kept. The second list is that charge, period by period, for gate 9.
     """
 
     warmup = max(entry_lookback, exit_lookback, vol_window)
     one_way_cost = ROUND_TRIP_BPS / 2.0 / 10_000.0
     returns = [0.0] * PERIODS
+    costs = [0.0] * PERIODS
     holding = False
     for day in range(warmup, PERIODS):
         previous = holding
@@ -92,7 +93,8 @@ def _strategy_returns(
             returns[day] = raw[day]
         if holding != previous:
             returns[day] -= one_way_cost
-    return returns
+            costs[day] = one_way_cost
+    return returns, costs
 
 
 def run_demo() -> int:
@@ -114,7 +116,7 @@ def run_demo() -> int:
         best_trial_id = 0
         best_label = ""
         for entry, exit_, window, threshold in grid:
-            returns = _strategy_returns(
+            returns, costs = _strategy_returns(
                 prices,
                 raw,
                 volatility[window],
@@ -146,6 +148,7 @@ def run_demo() -> int:
                 metrics={"annualized_sharpe": f"{annualized:.4f}"},
                 operator_note=f"entry={entry} exit={exit_} vol={window}/{threshold}",
                 period_returns=returns,
+                period_costs=costs,
             )
             if annualized > best_sharpe:
                 best_sharpe = annualized

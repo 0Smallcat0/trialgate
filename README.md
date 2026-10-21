@@ -40,6 +40,8 @@ FAIL  DSR (gate 4): 0.603118 >= 0.95  -- WARNING returns are serially correlated
       Lo's eta(q). Pass autocorrelation="adjust" to judge the adjusted value
 PASS  stop-line survivability (gate 7): 1.10249e-15 <= 0.1
 PASS  declared costs (gate 8): 450 >= 450
+FAIL  cost stress (gate 9): 0.508305 >= 0.95  -- at 2x the costs its returns were
+      charged (DSR 0.603118 at 1x); its mean return reaches zero at 19.80x those costs
 NOT QUALIFIED
 ```
 
@@ -65,8 +67,9 @@ trialgate import-freqtrade user_data/hyperopt_results --registry state/registry.
 ```
 
 That registers each epoch as a trial with its daily returns (every calendar day
-of the backtest, compounding back to freqtrade's own `profit_total`), its fees
-and its parameters, and prints the command that judges freqtrade's pick.
+of the backtest, compounding back to freqtrade's own `profit_total`), the fee
+each trade paid, booked on the day it closed, and its parameters, and prints
+the command that judges freqtrade's pick.
 Importing again registers only new epochs. Here is a real one: the bundled
 `SampleStrategy`, 4h candles on BTC/USDT and ETH/USDT through 2024, 20 epochs.
 freqtrade's best epoch made 5 trades, won all 5, and reports a Sharpe of 39.7:
@@ -81,24 +84,31 @@ FAIL  data floor (gate 2): 5 >= 1000  -- only 5 of 367 periods had a return; a
 FAIL  PBO (gate 3): 0.734654 <= 0.05
 FAIL  DSR (gate 4): 0.11821 >= 0.95
 PASS  declared costs (gate 8): 20 >= 20
+FAIL  cost stress (gate 9): 0.11821 >= 0.95  -- at 2x the costs its returns were
+      charged (DSR 0.11821 at 1x); its mean return reaches zero at 5.97x those costs
 NOT QUALIFIED
 ```
 
 Five winning trades are five data points. A PBO of 0.73 says the epoch that
 looks best in one half of the year is below the median in the other half most
-of the time. `evaluate` exits 1 when the trial is not qualified, so it can sit
-in front of a deploy script.
+of the time. Costs are not its problem: all five trades exited at the same
+take-profit, so paying each fee twice shrinks every win by the same fraction
+and leaves the Sharpe ratio where it was, and the profit would survive nearly
+six times the fees. `evaluate` exits 1 when the trial is not qualified, so it
+can sit in front of a deploy script.
 
 With Optuna, register every trial as the study runs. trialgate does not import
-Optuna; your objective stores the returns on the trial:
+Optuna; your objective stores the returns, and what execution cost in each
+period, on the trial:
 
 ```python
 from trialgate import OptunaRecorder
 
 
 def objective(trial):
-    returns = my_backtest_returns(trial.suggest_int("lookback", 5, 200))
-    trial.set_user_attr("period_returns", returns)
+    returns, costs = my_backtest(trial.suggest_int("lookback", 5, 200))
+    trial.set_user_attr("period_returns", returns)  # net of costs
+    trial.set_user_attr("period_costs", costs)  # for gate 9
     return my_sharpe(returns)
 
 
@@ -156,8 +166,19 @@ exists to prevent.
 - **One number is still yours to choose.** Trials from a nested grid are
   correlated, so the honest count is below the registered N and nobody agrees
   how to find it. The library refuses to guess and makes you type it.
+- **It does not look for look-ahead bias.** A backtest that reads tomorrow's
+  candle is a bug, not luck, and the engine is the place to find it (freqtrade
+  ships `lookahead-analysis`). What trialgate catches is the consequence: live
+  returns that do not look like the backtest, which is what gate 6 stops.
+- **It does not cap how much of the profit came from a few days.** On
+  simulated strategies whose edge is real by construction (1,000 independent
+  days at an annual Sharpe of 1.0), the best five days are a median 28% of the
+  profit, and removing the best 21 (2.1% of days) erases it. A fixed threshold
+  on that rejects good strategies for being volatile; the DSR's skew and
+  kurtosis terms and PBO's time blocks already price a profit that sits in a
+  few periods.
 
-## The eight gates
+## The nine gates
 
 Built from the anti-overfitting literature (Bailey & López de Prado, 2014;
 Bailey, Borwein, López de Prado & Zhu, 2015; Arnott, Harvey & Markowitz, 2019)
@@ -174,6 +195,7 @@ gate 7, the first-passage identity for Brownian motion with drift:
 | 6. Live deviation | Before going live, lock bands for cumulative return, drawdown from peak and the longest losing run, bootstrapped from the candidate's own registered returns with a joint false-alarm rate (default 5%). Live or paper returns that leave them mean STOP. The lock also states how often a strategy with no edge at all would stay inside, so a PASS is not overread. | `trialgate.live` |
 | 7. Stop-line survivability | The probability that the strategy's own volatility trips the operator's hard stop, from an exact first-passage formula rather than a simulation. Reports the volatility to size down to. Off unless you supply a stop-loss policy — defaulting one would be inventing your risk appetite. | `trialgate.risk` |
 | 8. Declared costs | Every trial in the registry priced execution above zero. A missing key and an explicit `"0"` are the same verdict; only one of them looks like an oversight. | `trialgate.gates` |
+| 9. Cost stress | The candidate's registered per-period costs are charged again (2× in total by default) and the DSR of what is left must still clear gate 4's bar. Reports the multiple of those costs at which the mean return reaches zero. A trial registered without its costs fails rather than being assumed cheap. | `trialgate.gates` |
 
 Gate 7 exists because a strategy can clear 2–4 and still be untradeable. A
 *genuine* annualized Sharpe of 1.0 run at 15% volatility breaches a −15% stop
@@ -189,6 +211,16 @@ from-peak variant is absent rather than approximated: the cheap route through
 Lehoczky's expected first-passage time overstated by 3× in the low-probability
 region when measured against simulation, and a gate is the wrong place for a
 number that is wrong exactly where it matters.
+
+Gate 9 exists because one basis point satisfies gate 8. A backtest charges the
+fee its author typed in; the costs that are hard to know — the spread, the
+slippage, the fill a tick later — are the ones left out (freqtrade's
+backtester, for one, fills every order at the requested price). Paying the
+recorded costs twice is the default allowance for them. An edge several times
+its costs survives that. An edge the size of its costs, which a sweep of
+hundreds of configurations finds easily, does not: in the tests, a candidate
+netting 0.1% a day after 0.1% of costs passes gate 4 at a DSR of 0.98 and
+fails gate 9 at 0.12.
 
 Zero dependencies, pure standard library, `mypy --strict`, Python 3.11+.
 
@@ -281,11 +313,13 @@ for lookback in candidate_lookbacks:
         metrics={"annualized_sharpe": f"{my_backtest_sharpe(lookback):.4f}"},
         operator_note="lookback sweep",
         holdout="state/holdout.json",
-        # The return series is what makes this trial usable by gate 3.
+        # The return series is what makes this trial usable by gate 3,
+        # and what each period paid for execution is what gate 9 doubles.
         period_returns=my_backtest_returns(lookback),
+        period_costs=my_backtest_costs(lookback),
     )
 
-# Gates 2-4 in one call, over data that only came from the registry.
+# Gates 2-4 and 7-9 in one call, over data that only came from the registry.
 report = evaluate_registry(
     "state/registry.jsonl",
     candidate_trial_id=37,
@@ -301,6 +335,8 @@ print(report.summary())
 # FAIL  stop-line survivability (gate 7): 0.358932 <= 0.1  -- ran at 24.0% annualized
 #       volatility against a -15% stop; survivable volatility is 12.7% (size x0.53)
 # PASS  declared costs (gate 8): 450 >= 450
+# PASS  cost stress (gate 9): 0.953 >= 0.95  -- at 2x the costs its returns were
+#       charged (DSR 0.97 at 1x); its mean return reaches zero at 6.40x those costs
 # NOT QUALIFIED
 ```
 
