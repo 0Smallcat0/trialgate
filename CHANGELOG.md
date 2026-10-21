@@ -103,9 +103,23 @@ gates, each with its reason.
   strategy in the market on 39 of 2000 days now has 39 observations. This
   changes verdicts: the demo's best configuration now fails gate 2 as well as
   gate 4.
+- **Each gate line reads `observed (needs >= threshold)`** instead of
+  `observed >= threshold`, which read as a claim that the value met the bar
+  on a FAIL line. Gate 7 adds the position size to reach a survivable
+  volatility only when the stop would be hit too often; a passing line no
+  longer suggests sizing up.
 
 ### Fixed
 
+- **`trialgate verify` of a mistyped path exited 0.** An absent file reads as
+  an empty registry, so a CI check pointed at the wrong path printed OK. It
+  now prints FAIL and exits 1.
+- **Command-line errors are one line.** A wrong trial id, a missing file or a
+  refused lock printed a Python traceback; it now prints `error: <message>`
+  and exits 1.
+- **`live-lock` refuses a trial that never traded.** Constant returns give
+  bands with nothing to hold live returns to; freqtrade epochs with zero trades
+  are exactly that. The message says to lock the trial `evaluate` judged.
 - **PBO scored a constant-return column at a Sharpe of ~2e7.** The fast CSCV
   path computed variance as sum-of-squares minus squared-sum, which leaves a
   rounding residue (~1e-20) on a constant column instead of zero. A cash-like
@@ -142,6 +156,13 @@ gates, each with its reason.
 
 ### Docs
 
+- Every example in the README runs as written and shows the output it
+  printed: the quickstart is a whole script with a stand-in backtest, the
+  freqtrade example imports the hyperopt file shipped in
+  `tests/fixtures/freqtrade`, the Optuna example was run against Optuna 5.0,
+  and the live-lock and verify examples use the quickstart's registry. The
+  quickstart comes before the theory, and an unsourced case-study figure is
+  gone.
 - The README's "What it will not do" now names two checks left out on
   purpose. Look-ahead is a bug for the engine to find (freqtrade ships
   `lookahead-analysis`); gate 6 catches what it does live. A cap on how much

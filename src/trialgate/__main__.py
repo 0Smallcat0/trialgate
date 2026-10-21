@@ -32,11 +32,17 @@ from pathlib import Path
 
 from trialgate.registry import verify_chain
 
+# What a wrong path, a wrong trial id or a refused lock raises (every trialgate
+# error is a ValueError). The message is the whole answer; the traceback above
+# it only hid it.
+_USER_ERRORS = (OSError, ValueError)
+
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="trialgate",
-        description="Audit an append-only trial registry.",
+        description="Tell a backtest that is skill from one that is luck: register every "
+        "trial, judge the candidate, then watch it live.",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
 
@@ -102,7 +108,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     check.add_argument("--registry", help="recompute the bands from it to confirm the lock")
 
     args = parser.parse_args(argv)
+    try:
+        return _run(args)
+    except _USER_ERRORS as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
+
+def _run(args: argparse.Namespace) -> int:
     if args.command == "demo":
         from trialgate.demo import run_demo
 
@@ -116,6 +129,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "live-check":
         return _live_check(args)
 
+    # verify_chain() reads an absent file as an empty registry, which is right
+    # for a log about to be started and wrong for one being audited: a mistyped
+    # path printed OK and exited 0.
+    if not Path(args.registry).is_file():
+        print(f"FAIL  {args.registry}\n      no registry file at this path", file=sys.stderr)
+        return 1
     report = verify_chain(args.registry)
     print(report.summary(), file=sys.stdout if report.ok else sys.stderr)
     return 0 if report.ok else 1

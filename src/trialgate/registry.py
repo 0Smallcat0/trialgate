@@ -1,6 +1,6 @@
 """Append-only trial registry: unregistered backtests are void.
 
-Gate 1 of the six-gate qualification standard. Every backtest execution of
+Gate 1 of the nine-gate qualification standard. Every backtest execution of
 any variant must be recorded here; the registry maintains the running trial
 count N used by the DSR gate. A backtest that does not disclose its trial
 count is worthless by construction (Bailey & Lopez de Prado 2014).

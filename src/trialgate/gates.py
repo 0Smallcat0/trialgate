@@ -29,8 +29,8 @@ backtest assumed does not qualify. It is on by default too, and fails a
 candidate registered without ``period_costs``.
 
 Passing every gate is a NECESSARY condition for trusting a backtest, not a
-profit guarantee: in a verified 2022 case study the least-overfit strategy
-still lost ~35% in two months.
+profit guarantee: the gates remove strategies that are probably luck, and
+cannot promise the market will keep behaving.
 """
 
 from __future__ import annotations
@@ -78,7 +78,10 @@ class GateCheck:
 
     def describe(self) -> str:
         status = "PASS" if self.passed else "FAIL"
-        line = f"{status}  {self.gate}: {self.observed:g} {self.comparison} {self.threshold:g}"
+        # 「0.603118 >= 0.95」 read as a false statement; it is the requirement.
+        line = (
+            f"{status}  {self.gate}: {self.observed:g} (needs {self.comparison} {self.threshold:g})"
+        )
         return f"{line}  -- {self.detail}" if self.detail else line
 
 
@@ -248,9 +251,15 @@ def evaluate_registry(
         )
         detail = (
             f"ran at {stop.annual_volatility:.1%} annualized volatility against a "
-            f"-{stop_loss_fraction:.0%} stop; survivable volatility is "
-            f"{stop.survivable_volatility:.1%} (size x{stop.volatility_scale:.2f})"
+            f"-{stop_loss_fraction:.0%} stop"
         )
+        # Only ever an instruction to size DOWN. The demo's random walk passed
+        # this gate with 「size x7.56」, which reads as advice to bet more on luck.
+        if stop.volatility_scale < 1.0:
+            detail += (
+                f"; survivable volatility is {stop.survivable_volatility:.1%} "
+                f"(size x{stop.volatility_scale:.2f})"
+            )
         checks = (*checks, _stop_check(stop.breach_probability, max_stop_breach, detail))
 
     if require_declared_costs:

@@ -422,6 +422,14 @@ def compute_live_bands(
     if any(not math.isfinite(value) or value <= -1.0 for value in series):
         msg = "backtest returns must be finite and above -100%"
         raise LiveBandsError(msg)
+    # A trial that never traded locked 「below +0.00%, drawdown exceeds 0.00%」
+    # and then stopped any live strategy on its first losing day.
+    if max(series) == min(series):
+        msg = (
+            f"all {periods} backtest returns are {series[0]:g}; a trial that never traded "
+            "has no behaviour to hold live returns to. Lock the trial evaluate judged"
+        )
+        raise LiveBandsError(msg)
 
     rng = random.Random(seed)
     calibration = _paths(series, horizon, length, resamples, rng)

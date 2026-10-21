@@ -192,7 +192,10 @@ def test_the_stop_line_gate_is_absent_until_a_policy_is_given(tmp_path: Path) ->
 
     assert not any(check.gate.startswith("stop-line") for check in without.checks)
     assert 0.0 <= stop.observed <= 1.0
-    assert "survivable volatility" in stop.detail
+    assert stop.passed and "annualized volatility" in stop.detail
+    # A pass never says how much bigger to bet: the demo's random walk read
+    # 「size x7.56」 here.
+    assert "size x" not in stop.detail
 
 
 def test_the_data_floor_counts_periods_with_a_return_not_the_calendar(tmp_path: Path) -> None:

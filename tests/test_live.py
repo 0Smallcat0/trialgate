@@ -180,6 +180,13 @@ def test_bands_come_from_the_registered_series_only(tmp_path: Path) -> None:
         )
 
 
+def test_a_trial_that_never_traded_is_not_locked() -> None:
+    # freqtrade's trial 1 in the bundled run made no trade; its bands were all
+    # zero and the first losing live day was a STOP.
+    with pytest.raises(LiveBandsError, match="never traded"):
+        compute_live_bands([0.0] * 367, horizon=90)
+
+
 def test_a_too_short_backtest_or_a_naive_timestamp_is_refused(tmp_path: Path) -> None:
     with pytest.raises(LiveBandsError, match="too few"):
         compute_live_bands([0.01, -0.01, 0.0], horizon=10)
