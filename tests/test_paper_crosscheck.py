@@ -7,7 +7,8 @@ backtest's first bar, a trial count with no trial spread behind it.
 
 Sources:
 - Bailey & Lopez de Prado, "The Deflated Sharpe Ratio" (JPM 2014), the
-  numerical example in section 4: N = 100 trials, V[SR_n] = 1/2 annualized,
+  section "A Numerical Example", pp. 9-10 of the July 31, 2014 preprint
+  (Eqs. (1)-(2), pp. 7-8): N = 100 trials, V[SR_n] = 1/2 annualized,
   annualized SR = 2.5 over T = 1250 daily observations (250 per year),
   skew -3, kurtosis 10 -> SR_0 = 0.1132 per period, DSR = 0.9004.
 - Bailey, Borwein, Lopez de Prado & Zhu, "The Probability of Backtest

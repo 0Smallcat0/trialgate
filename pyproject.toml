@@ -49,6 +49,10 @@ dev = [
     "pytest",
     "ruff",
     "mypy",
+    # Test-only: independent reference implementations to check against.
+    # The library itself stays standard-library only.
+    "numpy",
+    "scipy",
 ]
 
 [tool.setuptools.packages.find]
