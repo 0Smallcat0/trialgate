@@ -1,5 +1,88 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Serial correlation in the DSR and in annualization.** The PSR/DSR
+  standard error and √p annualization assume independent periods, so
+  positively autocorrelated returns overstated both. `deflated_sharpe_ratio()`
+  now estimates the Sharpe estimator's long-run variance (Lo 2002, GMM case,
+  AR(1)-prewhitened Bartlett HAC) and reports the DSR on the equivalent number
+  of independent observations, with Ljung-Box diagnostics
+  (`AutocorrelationDiagnostics`). `autocorrelation="report"` (default) keeps
+  the IID value bit for bit; `"adjust"` judges the adjusted value; `"ignore"`
+  skips the estimate. `evaluate_registry()` takes the same argument and, by
+  default, attaches a warning to gate 4 when the correlation is significant.
+  `observations_required_for_dsr()` scales its answer by the variance ratio
+  under `"adjust"`. The adjustment is trialgate's extension: Bailey & López
+  de Prado's DSR and PSR do not correct for serial correlation (the PSR
+  paper, p. 4, leaves it unaddressed).
+- **`lo_annualized_sharpe()`**: annual Sharpe by Lo's η(q) next to the √q
+  figure. Uses the sample autocorrelations up to the Andrews (1991) bandwidth
+  by default, or all q − 1 of Lo's formula with `max_lag=periods_per_year - 1`.
+- The demo's gate 4 line now carries that warning: the best of 450
+  configurations has lag-1 autocorrelation +0.35, an adjusted DSR of 0.574
+  (0.603 unadjusted) and an η(q) annual Sharpe of 0.67 against 1.20 by √252.
+  The verdict is unchanged.
+
+- Citations in the docstrings and README now give equation and page numbers
+  for Lo (2002) and the PSR/DSR papers.
+
+### Fixed
+
+- **PBO scored a constant-return column at a Sharpe of ~2e7.** The fast CSCV
+  path computed variance as sum-of-squares minus squared-sum, which leaves a
+  rounding residue (~1e-20) on a constant column instead of zero. A cash-like
+  trial earning 0.169% every period then won every in-sample split and topped
+  every out-of-sample rank: PBO came out **0.0** on a matrix whose literal
+  definition gives **0.4**. Each column is now shifted by its first value
+  before accumulating, which leaves the variance unchanged and the constant
+  column at exactly zero.
+- **NaN and infinity are refused** by `probability_of_backtest_overfitting()`
+  and `deflated_sharpe_ratio()` (returns and `trial_sharpes`). A NaN from a
+  backtest's first bar previously decided CSCV's argmax and rank silently, and
+  crashed the DSR with an `AttributeError` from inside `statistics`.
+- **`deflated_sharpe_ratio()` refuses `effective_trials > 1` with fewer than
+  two `trial_sharpes`.** One Sharpe has no spread, so the expected maximum was
+  set to 0 and the "deflated" ratio deflated by nothing.
+- **`probability_of_backtest_overfitting()` refuses splits of one row**
+  (`block_count=2` with fewer than 4 rows). Every Sharpe there was scored 0.0
+  and PBO came out a passing 0.0.
+- **`observations_required_for_dsr()` refuses `target_dsr` outside (0.5, 1).**
+  The inversion squares the normal quantile, so a target of 0.05 reported the
+  sample size for 0.95, and 1.0 failed inside `statistics`.
+
+- **A column constant over a split but not equal to its first row** (an entry
+  cost on bar one, then a flat yield) still left a rounding residue after the
+  shift above and scored a Sharpe in the millions: PBO 0.0 where the literal
+  definition gives 0.37. A split's spread inside the summation error bound is
+  now treated as zero.
+- **CSCV ranks out-of-sample ties against the chosen trial.** Ties were ranked
+  in its favour, so duplicated columns (a grid parameter that changes nothing)
+  lifted it past the median: on pure noise with 7 distinct trials, doubling
+  each dropped PBO from about 0.6 to about 0.45. PBO now equals that of the
+  distinct trials. The demo's 450-configuration grid has such ties; its PBO
+  moves from 0.0417249 to 0.0418803.
+
+### Tests
+
+- Autocorrelation: the default DSR pinned bit for bit to the previous release
+  on IID data; the adjusted Sharpe standard error against Monte Carlo and the
+  AR(1) asymptotic variance for φ from −0.5 to 0.8; DSR calibration on
+  autocorrelated nulls; η(q) against Lo's AR(1) closed form and simulated
+  q-period sums; Ljung-Box and the HAC against numpy/scipy reimplementations.
+  numpy and scipy are test-only `dev` extras.
+- Cross-checks against Lo (2002): every cell of Table 2 (η(q) under AR(1),
+  p. 41) to the printed two decimals, and the Sharpe columns of Table 4
+  (p. 44), all 22 funds within the printed rounding. Table 4's SR(12) column
+  needs 11 autocorrelations per fund and the table prints 3, so it is
+  recorded as out of reach rather than fitted.
+- Cross-checks against the worked example in Bailey & López de Prado (2014):
+  SR_0 = 0.1132 and DSR = 0.9004 are reproduced; DSR against a reference
+  written from raw sums; PBO against the paper's logit definition, and its
+  invariance to column order and positive rescaling.
+
 ## 0.5.1
 
 ### Fixed

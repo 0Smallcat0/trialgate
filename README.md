@@ -31,8 +31,12 @@ Registered trials (the honest N): 450
 OK    450 trials, sealed against edits: 1-449
 
 PASS  data floor (gate 2): 2000 >= 1000
-PASS  PBO (gate 3): 0.0417249 <= 0.05
-FAIL  DSR (gate 4): 0.603118 >= 0.95
+PASS  PBO (gate 3): 0.0418803 <= 0.05
+FAIL  DSR (gate 4): 0.603118 >= 0.95  -- WARNING returns are serially correlated
+      (lag-1 autocorrelation +0.35, Ljung-Box Q(10) p=4.5e-160), which this DSR
+      assumes away: adjusted for it, DSR is 0.57409 on 1022 effective of 2000
+      observations (would FAIL); annualized Sharpe 1.20 by sqrt(252) is 0.67 by
+      Lo's eta(q). Pass autocorrelation="adjust" to judge the adjusted value
 PASS  stop-line survivability (gate 7): 1.10249e-15 <= 0.1
 PASS  declared costs (gate 8): 450 >= 450
 NOT QUALIFIED
@@ -40,7 +44,11 @@ NOT QUALIFIED
 
 Sharpe 1.20 is a number people quit their jobs over. There is nothing in that
 data. Note which gate caught it: PBO passed, comfortably. One gate clearing is
-not the same as a strategy clearing, which is why there is more than one. The
+not the same as a strategy clearing, which is why there is more than one. And
+the 1.20 is flattering twice over: the winning configuration holds a position
+on 39 of 2000 days, bunched into a few runs of up days, so its returns are
+serially correlated and annualizing by √252 overstates them (see
+[Serially correlated returns](#serially-correlated-returns)). The
 demo's source is also the integration example — swap its price series and its
 backtest for yours and the rest is unchanged.
 
@@ -114,6 +122,62 @@ region when measured against simulation, and a gate is the wrong place for a
 number that is wrong exactly where it matters.
 
 Zero dependencies, pure standard library, `mypy --strict`, Python 3.11+.
+
+## Serially correlated returns
+
+The DSR's standard error and the usual √p annualization both assume one
+period's return says nothing about the next. Smoothed marks, illiquid holdings,
+overlapping signals and trend filters break that, almost always in the
+flattering direction: with lag-1 autocorrelation 0.5 the IID standard error of
+the Sharpe ratio is √3 too small, and about one zero-edge strategy in six clears
+a 0.95 DSR instead of one in twenty.
+
+trialgate estimates the long-run variance of the Sharpe estimator (Lo 2002,
+non-IID case, Eq. (14) p. 39 and Appendix A Eqs. (A3), (A7)-(A11) pp. 46-47;
+AR(1)-prewhitened Bartlett kernel, Andrews & Monahan 1992, where Lo uses
+Newey-West at a fixed lag, Eqs. (A12)-(A14) p. 47) and recomputes the DSR on
+the equivalent number of independent observations:
+
+```
+z_adj = (SR - SR_0) * sqrt((T - 1) / ratio) / sqrt(1 - skew*SR + (kurt - 1)/4 * SR^2)
+T_eff = 1 + (T - 1) / ratio,   ratio = long-run / IID variance of SR-hat
+```
+
+**This adjustment is trialgate's extension, not Bailey & López de Prado's
+method.** The DSR (2014, Eq. (2) p. 8) and the PSR (2012, Eq. (11) p. 9) use
+the IID non-normal Sharpe variance the 2012 paper takes from Mertens (2002)
+(Eq. (8) p. 8). The DSR
+paper does not discuss serial correlation. The PSR paper states that it does
+not "explicitly address the case of serially-conditioned processes" (p. 4)
+and takes the Mertens variance to remain valid for stationary, ergodic
+returns, citing Christie (2005) and Opdyke (2007) (pp. 4, 8). trialgate does
+not rely on that reading: Lo's GMM variance carries the lag covariances the
+Mertens term drops, and on AR(1) returns the IID standard error misses the
+Monte Carlo spread of the estimator by up to 3× (tests/test_autocorrelation.py).
+What is borrowed from the papers is each piece — Lo's variance, Bailey &
+López de Prado's statistic — not their combination.
+
+`lo_annualized_sharpe()` annualizes with Lo's `eta(q) = q / sqrt(q + 2 *
+sum_{k<q} (q - k) rho_k)` (Eq. (20) p. 40) in place of √q. Lo's estimator
+uses all q - 1 sample autocorrelations (p. 42); trialgate defaults to the
+Andrews (1991) bandwidth and treats later lags as zero, which is its own
+choice (pass `max_lag=periods_per_year - 1` for Lo's). Every cell of Lo's
+AR(1) Table 2 (p. 41) is reproduced to the printed two decimals
+(tests/test_lo_2002_crosscheck.py). Page numbers for Lo are the Financial
+Analysts Journal's; for Bailey & López de Prado, the authors' preprints (PSR:
+July 2012; DSR: July 31, 2014).
+
+| `autocorrelation=` | Gate 4 judges | Report |
+|---|---|---|
+| `"report"` (default) | the IID DSR, exactly as before | a warning with the adjusted DSR, effective sample size and η(q) Sharpe when Ljung-Box finds the correlation significant (p < 0.05) |
+| `"adjust"` | the adjusted DSR | the IID value alongside |
+| `"ignore"` | the IID DSR | nothing; the estimate is skipped |
+
+The default leaves verdicts where they were on purpose: a significance test
+fires on 5% of IID series by construction, and a gate whose verdict changes
+between releases, or between two runs of the same strategy on either side of
+p = 0.05, is a gate nobody can reason about. The warning says what the adjusted
+verdict would be; `"adjust"` makes it binding.
 
 ## Quickstart
 
@@ -303,11 +367,21 @@ produced.
 ## References
 
 - Bailey & López de Prado — *The Deflated Sharpe Ratio* (Journal of Portfolio
-  Management, 2014)
+  Management 40(5), 2014); DSR Eq. (2), p. 8 of the July 31, 2014 preprint
 - Bailey, Borwein, López de Prado & Zhu — *The Probability of Backtest
   Overfitting* (Journal of Computational Finance, 2015)
 - Arnott, Harvey & Markowitz — *A Backtesting Protocol in the Era of Machine
   Learning* (Journal of Financial Data Science, 2019)
+- Lo — *The Statistics of Sharpe Ratios* (Financial Analysts Journal 58(4),
+  2002, pp. 36–52); η(q) Eqs. (20) p. 40 and (22) p. 41, GMM variance Eq. (14)
+  p. 39, Appendix A pp. 46–50
+- Bailey & López de Prado — *The Sharpe Ratio Efficient Frontier* (Journal of
+  Risk 15(2), 2012); Sharpe variance Eq. (8) p. 8 and PSR Eq. (11) p. 9 of the
+  July 2012 preprint
+- Andrews — *Heteroskedasticity and Autocorrelation Consistent Covariance
+  Matrix Estimation* (Econometrica, 1991); Andrews & Monahan — *An Improved
+  Heteroskedasticity and Autocorrelation Consistent Covariance Matrix
+  Estimator* (Econometrica, 1992)
 
 ## License
 
