@@ -2,13 +2,21 @@
 
 A strategy earns belief by surviving verification, not by looking good
 in-sample. This package provides the mechanical parts of a qualification
-standard: a tamper-evident append-only trial registry, CSCV/PBO and Deflated
-Sharpe Ratio statistics, a single-use holdout lock, a stop-line survivability
-check, and threshold gates that combine them into a verdict.
+standard: a tamper-evident append-only trial registry filled straight from
+freqtrade or Optuna, CSCV/PBO and Deflated Sharpe Ratio statistics, a
+single-use holdout lock, live deviation bands, a stop-line survivability
+check, a cost stress, and threshold gates that combine them into a verdict.
 """
 
 from trialgate.autocorrelation import AutocorrelationDiagnostics
+from trialgate.capture import (
+    ImportReport,
+    OptunaRecorder,
+    import_freqtrade_results,
+    import_optuna_study,
+)
 from trialgate.gates import (
+    DEFAULT_COST_MULTIPLIER,
     DEFAULT_MAX_PBO,
     DEFAULT_MAX_STOP_BREACH,
     DEFAULT_MIN_DSR,
@@ -26,6 +34,16 @@ from trialgate.holdout import (
     require_data_allowed,
     spend_holdout,
 )
+from trialgate.live import (
+    BandSet,
+    LiveBands,
+    LiveBandsError,
+    LiveCheck,
+    check_live,
+    compute_live_bands,
+    load_live_bands,
+    lock_live_bands,
+)
 from trialgate.registry import (
     ChainReport,
     RegistryTamperError,
@@ -33,6 +51,7 @@ from trialgate.registry import (
     TrialRegistryError,
     append_trial,
     config_hash_for,
+    load_period_costs,
     load_trials,
     performance_matrix,
     trial_count,
@@ -59,9 +78,10 @@ from trialgate.validation import (
     sharpe_ratio,
 )
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 __all__ = [
+    "DEFAULT_COST_MULTIPLIER",
     "DEFAULT_MAX_PBO",
     "DEFAULT_MAX_STOP_BREACH",
     "DEFAULT_MIN_DSR",
@@ -69,6 +89,7 @@ __all__ = [
     "AnnualizedSharpe",
     "AutocorrelationDiagnostics",
     "AutocorrelationMode",
+    "BandSet",
     "ChainReport",
     "DataRequirement",
     "DeflatedSharpeResult",
@@ -76,6 +97,11 @@ __all__ = [
     "GateReport",
     "HoldoutState",
     "HoldoutViolationError",
+    "ImportReport",
+    "LiveBands",
+    "LiveBandsError",
+    "LiveCheck",
+    "OptunaRecorder",
     "PBOResult",
     "RegistryTamperError",
     "RiskInputError",
@@ -85,14 +111,21 @@ __all__ = [
     "ValidationInputError",
     "append_trial",
     "assess_stop_line",
+    "check_live",
+    "compute_live_bands",
     "config_hash_for",
     "deflated_sharpe_ratio",
     "evaluate_gates",
     "evaluate_registry",
+    "import_freqtrade_results",
+    "import_optuna_study",
     "initialize_holdout",
     "load_holdout",
+    "load_live_bands",
+    "load_period_costs",
     "load_trials",
     "lo_annualized_sharpe",
+    "lock_live_bands",
     "max_volatility_for_stop",
     "observations_required_for_dsr",
     "performance_matrix",

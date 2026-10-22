@@ -193,3 +193,35 @@ def test_cli_exit_status_reflects_chain_integrity(tmp_path: Path) -> None:
 
     _rewrite_line(registry_path, 0, "retconned")
     assert main(["verify", str(registry_path)]) == 1
+
+
+def test_cli_verify_of_a_mistyped_path_fails(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # It printed 「OK ... 0 trials」 and exited 0, which a CI check reads as a pass.
+    assert main(["verify", str(tmp_path / "typo.jsonl")]) == 1
+    assert "no registry file" in capsys.readouterr().err
+
+
+def test_cli_errors_are_one_line_not_a_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    registry_path = tmp_path / "registry.jsonl"
+    _append(registry_path, "first")
+
+    code = main(
+        [
+            "evaluate",
+            str(registry_path),
+            "--trial",
+            "9",
+            "--periods-per-year",
+            "252",
+            "--effective-trials",
+            "1",
+        ]
+    )
+
+    assert code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "Traceback" not in err

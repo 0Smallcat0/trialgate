@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from trialgate import append_trial, evaluate_registry, load_trials
+from trialgate import append_trial, evaluate_registry, load_trials, performance_matrix
 
 _NOW = datetime(2026, 7, 2, 12, 0, tzinfo=UTC)
 _START = datetime(2019, 1, 1, tzinfo=UTC)
@@ -72,6 +72,7 @@ def test_a_noise_sweep_is_not_qualified(tmp_path: Path) -> None:
         "PBO (gate 3)",
         "DSR (gate 4)",
         "declared costs (gate 8)",
+        "cost stress (gate 9)",
     ]
     assert "NOT QUALIFIED" in report.summary()
 
@@ -191,12 +192,18 @@ def test_the_stop_line_gate_is_absent_until_a_policy_is_given(tmp_path: Path) ->
 
     assert not any(check.gate.startswith("stop-line") for check in without.checks)
     assert 0.0 <= stop.observed <= 1.0
-    assert "survivable volatility" in stop.detail
+    assert stop.passed and "annualized volatility" in stop.detail
+    # A pass never says how much bigger to bet: the demo's random walk read
+    # 「size x7.56」 here.
+    assert "size x" not in stop.detail
 
 
-def test_the_data_floor_reads_the_registered_series_length(tmp_path: Path) -> None:
+def test_the_data_floor_counts_periods_with_a_return_not_the_calendar(tmp_path: Path) -> None:
     registry_path = tmp_path / "registry.jsonl"
     _register_noise_sweep(registry_path, periods=300)
+    candidate = performance_matrix(registry_path)
+    active = sum(1 for row in candidate if row[0] != 0.0)
+    assert 0 < active < 300
 
     report = evaluate_registry(
         registry_path,
@@ -204,12 +211,13 @@ def test_the_data_floor_reads_the_registered_series_length(tmp_path: Path) -> No
         periods_per_year=252,
         effective_trials=12,
         block_count=8,
-        min_observations=1000,
+        min_observations=active + 1,
     )
     floor = next(check for check in report.checks if check.gate.startswith("data floor"))
 
-    assert floor.observed == 300.0
+    assert floor.observed == float(active)
     assert not floor.passed
+    assert f"only {active} of 300 periods had a return" in floor.detail
 
 
 def test_an_unregistered_candidate_is_rejected(tmp_path: Path) -> None:

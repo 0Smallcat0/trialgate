@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trialgate"
-version = "0.5.1"
-description = "Anti-overfitting validation gate for backtested trading strategies: tamper-evident trial registry, CSCV/PBO, Deflated Sharpe Ratio, single-use holdout lock, stop-line survivability."
+version = "0.6.0"
+description = "Anti-overfitting validation gate for backtested trading strategies: trial capture from freqtrade and Optuna, tamper-evident trial registry, CSCV/PBO, Deflated Sharpe Ratio, single-use holdout lock, live deviation bands, stop-line survivability, cost stress."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

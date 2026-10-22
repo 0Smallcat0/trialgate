@@ -3,15 +3,16 @@
 The qualification standard (numbering follows the crypto signal system this
 library was extracted from):
 
-1. Trial registry (structural)      -> trialgate.registry
-2. Data floor (statistical)         -> judged here
+1. Trial registry (structural)      -> trialgate.registry, filled by trialgate.capture
+2. Data floor (statistical)         -> judged here, on periods with a return
 3. PBO <= 0.05 (statistical)        -> computed by trialgate.validation, judged here
 4. DSR >= 0.95 (statistical)        -> computed by trialgate.validation, judged here
 5. Single-use holdout (structural)  -> trialgate.holdout
-6. Paper trading with measured real costs (procedural) -> out of library
-   scope on purpose: it is a live measurement over months, not a computation.
+6. Live deviation (statistical)     -> trialgate.live: bands locked before going
+   live, judged against the live returns as they arrive, so after this report
 7. Stop-line survivability (statistical) -> computed by trialgate.risk, judged here
 8. Declared costs (structural)      -> judged here
+9. Cost stress (statistical)        -> judged here, on the registered period costs
 
 Gates 7 and 8 arrived in 0.5.0 from the same observation: a strategy can clear
 every statistical gate and still be untradeable, either because its own
@@ -21,18 +22,25 @@ the returns being judged were never charged for execution in the first place
 that recorded ``cost_assumptions={}`` -- that is the intended verdict on a
 gross-of-cost backtest, not an upgrade accident.
 
+Gate 9 closes what gate 8 leaves open: a cost of 1 bp declares a positive
+price and passes 8. Gate 9 charges the candidate's registered costs a second
+time and judges the DSR again, so an edge that only exists at the cost the
+backtest assumed does not qualify. It is on by default too, and fails a
+candidate registered without ``period_costs``.
+
 Passing every gate is a NECESSARY condition for trusting a backtest, not a
-profit guarantee: in a verified 2022 case study the least-overfit strategy
-still lost ~35% in two months.
+profit guarantee: the gates remove strategies that are probably luck, and
+cannot promise the market will keep behaving.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from trialgate.registry import load_trials, performance_matrix
+from trialgate.registry import load_period_costs, load_trials, performance_matrix
 from trialgate.risk import assess_stop_line
 from trialgate.validation import (
     AutocorrelationMode,
@@ -48,6 +56,7 @@ DEFAULT_MIN_OBSERVATIONS = 1000
 DEFAULT_MAX_PBO = 0.05
 DEFAULT_MIN_DSR = 0.95
 DEFAULT_MAX_STOP_BREACH = 0.10
+DEFAULT_COST_MULTIPLIER = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,7 +78,10 @@ class GateCheck:
 
     def describe(self) -> str:
         status = "PASS" if self.passed else "FAIL"
-        line = f"{status}  {self.gate}: {self.observed:g} {self.comparison} {self.threshold:g}"
+        # 「0.603118 >= 0.95」 read as a false statement; it is the requirement.
+        line = (
+            f"{status}  {self.gate}: {self.observed:g} (needs {self.comparison} {self.threshold:g})"
+        )
         return f"{line}  -- {self.detail}" if self.detail else line
 
 
@@ -135,6 +147,7 @@ def evaluate_registry(
     max_stop_breach: float = DEFAULT_MAX_STOP_BREACH,
     require_declared_costs: bool = True,
     autocorrelation: AutocorrelationMode = "report",
+    cost_multiplier: float | None = DEFAULT_COST_MULTIPLIER,
 ) -> GateReport:
     """Judge the gates for one registered trial, using only registered data.
 
@@ -144,6 +157,10 @@ def evaluate_registry(
     DSR deflates by is computed from those same columns rather than read from
     the self-reported ``metrics`` strings, and gate 7's volatility and drift
     are moments of that same column.
+
+    Gate 2 counts the candidate's periods with a nonzero return, not the
+    length of the series: a strategy flat on 1,961 of 2,000 days has 39 days
+    of evidence, and a calendar would credit it with 2,000.
 
     ``effective_trials`` is required, with no default, because it is the last
     number the library cannot derive: trials from a nested parameter grid are
@@ -166,7 +183,22 @@ def evaluate_registry(
     judges gate 4 on the adjusted DSR instead; ``"ignore"`` skips the
     estimate. The adjusted DSR is trialgate's extension of Bailey & Lopez de
     Prado's statistic, not their method; see trialgate.autocorrelation.
+
+    ``cost_multiplier`` (gate 9, default 2) charges the candidate's registered
+    ``period_costs`` that many times in total -- the costs already in its
+    returns plus ``cost_multiplier - 1`` more -- and judges the DSR of the
+    result against ``min_dsr``, deflated by the same trial spread as gate 4.
+    The detail reports the multiple of those costs at which the mean return
+    reaches zero. A candidate registered without ``period_costs`` fails, since
+    whether its edge survives a higher cost is then unknown; ``None`` skips
+    the gate.
     """
+
+    if cost_multiplier is not None and not (
+        math.isfinite(cost_multiplier) and cost_multiplier > 1.0
+    ):
+        msg = f"cost_multiplier must be above 1 (the costs already charged), got {cost_multiplier}"
+        raise ValueError(msg)
 
     trials = [
         trial
@@ -199,13 +231,14 @@ def evaluate_registry(
         autocorrelation=autocorrelation,
     )
     checks = _checks(
-        len(matrix),
+        sum(1 for value in candidate_returns if value != 0.0),
         pbo.pbo,
         dsr.deflated_sharpe_ratio,
         min_observations,
         max_pbo,
         min_dsr,
         _autocorrelation_detail(dsr, candidate_returns, periods_per_year, min_dsr),
+        periods=len(matrix),
     )
 
     if stop_loss_fraction is not None:
@@ -218,9 +251,15 @@ def evaluate_registry(
         )
         detail = (
             f"ran at {stop.annual_volatility:.1%} annualized volatility against a "
-            f"-{stop_loss_fraction:.0%} stop; survivable volatility is "
-            f"{stop.survivable_volatility:.1%} (size x{stop.volatility_scale:.2f})"
+            f"-{stop_loss_fraction:.0%} stop"
         )
+        # Only ever an instruction to size DOWN. The demo's random walk passed
+        # this gate with 「size x7.56」, which reads as advice to bet more on luck.
+        if stop.volatility_scale < 1.0:
+            detail += (
+                f"; survivable volatility is {stop.survivable_volatility:.1%} "
+                f"(size x{stop.volatility_scale:.2f})"
+            )
         checks = (*checks, _stop_check(stop.breach_probability, max_stop_breach, detail))
 
     if require_declared_costs:
@@ -248,7 +287,97 @@ def evaluate_registry(
             ),
         )
 
+    if cost_multiplier is not None:
+        checks = (
+            *checks,
+            _cost_stress_check(
+                path,
+                candidate_trial_id,
+                candidate_returns,
+                trial_sharpes=trial_sharpes,
+                periods_per_year=periods_per_year,
+                effective_trials=effective_trials,
+                autocorrelation=autocorrelation,
+                multiplier=cost_multiplier,
+                min_dsr=min_dsr,
+                unstressed_dsr=dsr.deflated_sharpe_ratio,
+            ),
+        )
+
     return GateReport(checks=checks)
+
+
+def _cost_stress_check(
+    path: str | Path,
+    candidate_trial_id: int,
+    returns: list[float],
+    *,
+    trial_sharpes: list[float],
+    periods_per_year: int,
+    effective_trials: int,
+    autocorrelation: AutocorrelationMode,
+    multiplier: float,
+    min_dsr: float,
+    unstressed_dsr: float,
+) -> GateCheck:
+    """Gate 9: charge the registered costs again and judge the DSR of what is left."""
+
+    gate = "cost stress (gate 9)"
+    costs = load_period_costs(path, candidate_trial_id)
+    if costs is None:
+        return GateCheck(
+            gate=gate,
+            passed=False,
+            observed=float("nan"),
+            threshold=min_dsr,
+            comparison=">=",
+            detail=(
+                f"trial {candidate_trial_id} was registered without period_costs, so "
+                "whether its edge survives a higher cost is unknown. import-freqtrade "
+                "records them; elsewhere pass period_costs= (Optuna: "
+                'user_attrs["period_costs"]), or cost_multiplier=None to skip'
+            ),
+        )
+    total_cost = sum(costs)
+    if total_cost <= 0.0:
+        return GateCheck(
+            gate=gate,
+            passed=False,
+            observed=float("nan"),
+            threshold=min_dsr,
+            comparison=">=",
+            detail=(
+                f"trial {candidate_trial_id} was charged nothing in any period, so there is "
+                "no cost to stress; a strategy that trades pays something"
+            ),
+        )
+    extra = multiplier - 1.0
+    stressed = [value - extra * cost for value, cost in zip(returns, costs, strict=True)]
+    result = deflated_sharpe_ratio(
+        stressed,
+        trial_sharpes=trial_sharpes,
+        periods_per_year=periods_per_year,
+        effective_trials=effective_trials,
+        autocorrelation=autocorrelation,
+    )
+    # Arithmetic, as the costs are: sum(returns) - (k - 1) * sum(costs) = 0.
+    breakeven = 1.0 + sum(returns) / total_cost
+    where = (
+        "its mean return is already at or below zero at the costs charged"
+        if breakeven <= 1.0
+        else f"its mean return reaches zero at {breakeven:.2f}x those costs"
+    )
+    return GateCheck(
+        gate=gate,
+        passed=result.deflated_sharpe_ratio >= min_dsr,
+        observed=result.deflated_sharpe_ratio,
+        threshold=min_dsr,
+        comparison=">=",
+        detail=(
+            f"at {multiplier:g}x the costs its returns were charged (DSR {unstressed_dsr:g} "
+            f"at 1x); {where}"
+        ),
+    )
 
 
 def _autocorrelation_detail(
@@ -348,7 +477,15 @@ def _checks(
     max_pbo: float,
     min_dsr: float,
     dsr_detail: str = "",
+    periods: int | None = None,
 ) -> tuple[GateCheck, ...]:
+    shortfall = f"{min_observations - observations} more observations needed"
+    if periods is not None and observations < periods:
+        shortfall = (
+            f"only {observations} of {periods} periods had a return; a period that "
+            f"returned exactly zero is not evidence. {min_observations - observations} "
+            "more needed"
+        )
     return (
         GateCheck(
             gate="data floor (gate 2)",
@@ -356,11 +493,7 @@ def _checks(
             observed=float(observations),
             threshold=float(min_observations),
             comparison=">=",
-            detail=(
-                ""
-                if observations >= min_observations
-                else f"{min_observations - observations} more observations needed"
-            ),
+            detail="" if observations >= min_observations else shortfall,
         ),
         GateCheck(
             gate="PBO (gate 3)",

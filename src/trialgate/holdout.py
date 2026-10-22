@@ -1,6 +1,6 @@
 """Single-use final holdout lock: iterated out-of-sample is not out-of-sample.
 
-Gate 5 of the six-gate qualification standard. The most recent slice of data
+Gate 5 of the nine-gate qualification standard. The most recent slice of data
 (typically ~12 months) is locked at first backtest; unlocking is a single-use,
 logged, irreversible event. After the spend, holdout data stays off-limits to
 regular runs forever (Arnott, Harvey & Markowitz 2019).
