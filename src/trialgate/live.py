@@ -47,7 +47,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeAlias
 
 from trialgate.registry import TrialRecord, TrialRegistryError, _load_returns, load_trials
 
@@ -468,7 +468,8 @@ def compute_live_bands(
     )
 
 
-Columns = tuple[list[array[float]], list[array[float]], list[array[float]]]
+# Quoted: array is subscriptable at runtime only from Python 3.12.
+Columns: TypeAlias = "tuple[list[array[float]], list[array[float]], list[array[float]]]"
 Bands = tuple[list[float], list[float], list[float]]
 
 
