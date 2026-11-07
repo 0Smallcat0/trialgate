@@ -5,6 +5,17 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
+**trialgate is an open-source (MIT) Python library and CLI that tells you whether
+a backtested trading strategy is overfit.** It records every backtest you run in
+a hash-chained registry, so the number of variants you tried is on file, then
+judges your best one with nine gates: Probability of Backtest Overfitting (PBO,
+via CSCV), the Deflated Sharpe Ratio (DSR), a single-use holdout, a minimum data
+floor, declared trading costs, cost stress, stop-line survivability and live
+deviation bands. It reads freqtrade hyperopt results in one command
+(`trialgate import-freqtrade`), records Optuna studies through a callback, and
+`trialgate evaluate` exits 1 when a strategy is not qualified, so it can block a
+deploy script. Python 3.11+, `pip install trialgate`.
+
 You spend three months on a strategy. The backtest shows an annualized Sharpe
 of 1.5. You put real money in. Six months later you are down 35%, and you
 cannot tell whether you were unlucky or whether you fooled yourself — because
